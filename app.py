@@ -9,16 +9,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="Bộ Lọc Cổ Phiếu HOSE Realtime - Tiềm Năng 6 Tháng", layout="wide")
 
-# CSS Giao diện màu TÍM TRẦN (#ff00ff / #c026d3) & Ẩn logo GitHub / Header
+# CSS Giao diện màu TÍM TRẦN (#ff00ff / #c026d3) & Tối ưu nút Sidebar cho Mobile
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
-    header {visibility: hidden;}
     footer {visibility: hidden;}
     div[data-testid="stToolbar"] {visibility: hidden !important;}
 
+    /* Nút mở Sidebar trên điện thoại luôn hiển thị rõ */
+    button[data-testid="baseButton-headerNoPadding"],
+    button[data-testid="stSidebarCollapseButton"] {
+        visibility: visible !important;
+        color: #ff00ff !important;
+    }
+
     .main {background-color: #0e1117; color: #ffffff;}
-    h1 {color: #c026d3; text-align: center; font-size: 26px; font-weight: bold;}
+    h1 {color: #c026d3; text-align: center; font-size: 24px; font-weight: bold;}
     
     .stButton>button {width: 100%; background-color: #9333ea; color: white; border-radius: 10px; height: 3.2em; font-weight: bold; font-size: 16px; border: none;}
     .stButton>button:hover {background-color: #c026d3; color: white;}
@@ -48,7 +54,7 @@ st.markdown("""
     
     .card {
         background-color: #1e222d; 
-        padding: 18px; 
+        padding: 16px; 
         border-radius: 12px; 
         border: 1px solid #2a2e39; 
         margin-bottom: 15px;
@@ -56,14 +62,14 @@ st.markdown("""
     }
     .card h2.stock-header { 
         color: #ff00ff !important; 
-        font-size: 22px; 
+        font-size: 20px; 
         margin-top: 0; 
         font-weight: bold;
         text-shadow: 0 0 8px rgba(255, 0, 255, 0.4);
     }
-    .card p { font-size: 15px; margin: 6px 0; color: #d1d5db; }
-    .price-tag { color: #ffcc00; font-size: 18px; font-weight: bold; }
-    .time-note { color: #9ca3af; font-size: 13px; font-style: italic; }
+    .card p { font-size: 14px; margin: 6px 0; color: #d1d5db; }
+    .price-tag { color: #ffcc00; font-size: 17px; font-weight: bold; }
+    .time-note { color: #9ca3af; font-size: 12px; font-style: italic; }
     .rs-tag { color: #51cf66; font-weight: bold; }
     .vol-tag { color: #ff922b; font-weight: bold; }
     </style>
@@ -82,7 +88,6 @@ analysis_method = st.sidebar.radio(
 
 st.sidebar.markdown("---")
 
-# Điều chỉnh ngưỡng mặc định linh hoạt hơn để không sót STB
 min_rs = st.sidebar.slider("Điểm sức mạnh giá (RS/RSI) tối thiểu:", 0, 100, 50)
 vol_ratio = st.sidebar.slider("Đột biến khối lượng (x lần TB 20 phiên trước):", 0.0, 3.0, 0.79, step=0.05)
 always_include_leaders = st.sidebar.checkbox("Ưu tiên giữ lại nhóm Cổ phiếu Nền tảng/Leader (STB, FPT, MWG...)", value=False)
@@ -177,7 +182,7 @@ def process_single(symbol):
                 raw_closes = pd.Series(js['c'], dtype=float)
                 vols = pd.Series(js['v'], dtype=float)
                 
-                # Quy đổi giá chuẩn ra VNĐ
+                # SỬA LỖI GIÁ: Nhân 1,000 để ra VNĐ chuẩn xác
                 closes = raw_closes.apply(lambda x: x * 1000 if x < 1000 else x)
                 
                 price_now = closes.iloc[-1]
@@ -273,10 +278,8 @@ if btn or "df_cached" in st.session_state:
                 (df_all['Biến động Vol'] >= vol_ratio)
             )
         
-        # Lọc cơ bản theo điều kiện
         res = df_all[cond]
         
-        # Nếu bật ưu tiên Leader, tự động bổ sung nhóm CANSLIM (bao gồm STB)
         if always_include_leaders:
             leaders_df = df_all[df_all['Là CANSLIM'] == True]
             res = pd.concat([res, leaders_df]).drop_duplicates(subset=['Mã'])
