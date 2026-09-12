@@ -9,19 +9,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="Bộ Lọc Cổ Phiếu HOSE Realtime - Tiềm Năng 6 Tháng", layout="wide")
 
-# CSS Giao diện màu TÍM TRẦN (#ff00ff / #c026d3) & Tối ưu nút Sidebar cho Mobile
+# CSS Giao diện màu TÍM TRẦN (#ff00ff / #c026d3) & Ẩn Header
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
+    header {visibility: hidden !important;}
     div[data-testid="stToolbar"] {visibility: hidden !important;}
-
-    /* Nút mở Sidebar trên điện thoại luôn hiển thị rõ */
-    button[data-testid="baseButton-headerNoPadding"],
-    button[data-testid="stSidebarCollapseButton"] {
-        visibility: visible !important;
-        color: #ff00ff !important;
-    }
 
     .main {background-color: #0e1117; color: #ffffff;}
     h1 {color: #c026d3; text-align: center; font-size: 24px; font-weight: bold;}
@@ -36,17 +30,11 @@ st.markdown("""
     div[data-baseweb="radio"] label div[aria-checked="true"] > div {
         background-color: #ff00ff !important;
     }
-    div[role="radiogroup"] label:hover {
-        color: #ff00ff !important;
-    }
 
     div[data-baseweb="slider"] div[role="slider"] {
         background-color: #ff00ff !important;
         border-color: #ffffff !important;
         box-shadow: 0 0 10px #ff00ff !important;
-    }
-    div[data-baseweb="slider"] div[data-testid="stSliderTickBar"] ~ div {
-        background-color: #c026d3 !important;
     }
     div[data-baseweb="slider"] div {
         background-color: #c026d3 !important;
@@ -78,46 +66,31 @@ st.markdown("""
 st.title("📱 BỘ LỌC CỔ PHIẾU HOSE - TIỀM NĂNG 6 THÁNG")
 st.caption("Dữ liệu đồng bộ chuẩn xác từ Sàn HOSE & VnDirect")
 
-# --- SIDEBAR TÙY CHỌN BỘ LỌC ---
-st.sidebar.header("⚙️ Tùy chọn Bộ Lọc")
+# --- KHU VỰC TÙY CHỌN BỘ LỌC NGAY MÀN HÌNH CHÍNH ---
+with st.expander("⚙️ **NHẤP VÀO ĐÂY ĐỂ ĐIỀU CHỈNH TÙY CHỌN BỘ LỌC**", expanded=True):
+    col_filter1, col_filter2 = st.columns(2)
+    
+    with col_filter1:
+        analysis_method = st.radio(
+            "Phương pháp phân tích:",
+            ("1. Cơ bản (CANSLIM)", "2. Kỹ thuật (Dòng tiền/RS)", "3. Lọc Kết hợp (Khuyến dùng)")
+        )
+        min_rs = st.slider("Điểm sức mạnh giá (RS/RSI) tối thiểu:", 0, 100, 40)
+        vol_ratio = st.slider("Đột biến khối lượng (x lần TB 20 phiên trước):", 0.0, 3.0, 0.5, step=0.05)
 
-analysis_method = st.sidebar.radio(
-    "Phương pháp phân tích:",
-    ("1. Cơ bản (CANSLIM)", "2. Kỹ thuật (Dòng tiền/RS)", "3. Lọc Kết hợp (Khuyến dùng)")
-)
-
-st.sidebar.markdown("---")
-
-min_rs = st.sidebar.slider("Điểm sức mạnh giá (RS/RSI) tối thiểu:", 0, 100, 50)
-vol_ratio = st.sidebar.slider("Đột biến khối lượng (x lần TB 20 phiên trước):", 0.0, 3.0, 0.79, step=0.05)
-always_include_leaders = st.sidebar.checkbox("Ưu tiên giữ lại nhóm Cổ phiếu Nền tảng/Leader (STB, FPT, MWG...)", value=False)
-
-st.sidebar.markdown("**Khối lượng giao dịch cổ phiếu gần nhất:**")
-vol_op_col, vol_val_col = st.sidebar.columns([1, 2])
-
-with vol_op_col:
-    vol_operator = st.selectbox(
-        "Phép so sánh",
-        ("≥", ">", "=", "<", "≤"),
-        label_visibility="collapsed"
-    )
-
-with vol_val_col:
-    target_vol = st.number_input(
-        "Số lượng cổ phiếu",
-        min_value=0,
-        max_value=10000000000,
-        value=0,
-        step=100000,
-        label_visibility="collapsed"
-    )
-
-st.sidebar.markdown("---")
-
-mode = st.sidebar.radio(
-    "Phương pháp chọn lọc:",
-    ("1. Xu hướng & Dòng tiền mạnh (Kỹ thuật)", "2. Cổ phiếu bứt phá nền giá (Breakout)")
-)
+    with col_filter2:
+        mode = st.radio(
+            "Phương pháp chọn lọc:",
+            ("1. Xu hướng & Dòng tiền mạnh (Kỹ thuật)", "2. Cổ phiếu bứt phá nền giá (Breakout)")
+        )
+        always_include_leaders = st.checkbox("Ưu tiên giữ lại nhóm Cổ phiếu Nền tảng/Leader (STB, FPT, MWG...)", value=True)
+        
+        st.markdown("**Khối lượng giao dịch cổ phiếu gần nhất:**")
+        vol_op_col, vol_val_col = st.columns([1, 2])
+        with vol_op_col:
+            vol_operator = st.selectbox("Phép so sánh", ("≥", ">", "=", "<", "≤"), label_visibility="collapsed")
+        with vol_val_col:
+            target_vol = st.number_input("Số lượng cổ phiếu", min_value=0, max_value=10000000000, value=0, step=100000, label_visibility="collapsed")
 
 HOSE_ALL_398 = sorted(list(set([
     'AAA', 'AAM', 'ABR', 'ABS', 'ABT', 'ACB', 'ACC', 'ACG', 'ACI', 'ACL', 'ADG', 'ADP', 'ADS', 'AGG', 'AGM', 'AGR', 
@@ -182,7 +155,7 @@ def process_single(symbol):
                 raw_closes = pd.Series(js['c'], dtype=float)
                 vols = pd.Series(js['v'], dtype=float)
                 
-                # SỬA LỖI GIÁ: Nhân 1,000 để ra VNĐ chuẩn xác
+                # Nhân 1,000 quy đổi ra giá VNĐ thực tế
                 closes = raw_closes.apply(lambda x: x * 1000 if x < 1000 else x)
                 
                 price_now = closes.iloc[-1]
@@ -298,7 +271,7 @@ if btn or "df_cached" in st.session_state:
         st.markdown(f"### 🎉 Kết quả: Tìm thấy **{len(res)}** cổ phiếu đạt tiêu chí (Đã rà soát **{len(df_all)}** mã)")
         
         if len(res) == 0:
-            st.warning("Không tìm thấy cổ phiếu nào thỏa mãn tiêu chí hiện tại. Hãy thử hạ bớt điểm RS hoặc biến động Vol ở góc trái!")
+            st.warning("Không tìm thấy cổ phiếu nào thỏa mãn tiêu chí hiện tại. Hãy thử hạ bớt điểm RS hoặc biến động Vol ở góc trên!")
         else:
             for _, row in res.iterrows():
                 st.markdown(f"""
