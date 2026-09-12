@@ -2,8 +2,6 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="Bộ Lọc Cổ Phiếu HOSE Realtime - Tiềm Năng 6 Tháng", layout="wide")
@@ -69,7 +67,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("📱 BỘ LỌC CỔ PHIẾU HOSE - TIỀM NĂNG 6 THÁNG")
-st.caption("Dữ liệu đồng bộ chuẩn xác từ Bảng giá HOSE & TCBS")
+st.caption("Dữ liệu đồng bộ chuẩn xác từ Sàn HOSE & VnDirect")
 
 # --- SIDEBAR TÙY CHỌN BỘ LỌC ---
 st.sidebar.header("⚙️ Tùy chọn Bộ Lọc")
@@ -84,7 +82,6 @@ st.sidebar.markdown("---")
 min_rs = st.sidebar.slider("Điểm sức mạnh giá (RS/RSI) tối thiểu:", 0, 100, 50)
 vol_ratio = st.sidebar.slider("Đột biến khối lượng (x lần TB 20 phiên trước):", 0.0, 3.0, 0.7, step=0.05)
 
-# --- BỔ SUNG LỰA CHỌN KHỐI LƯỢNG GIAO DỊCH PHIÊN GẦN NHẤT ---
 st.sidebar.markdown("**Khối lượng giao dịch cổ phiếu gần nhất:**")
 vol_op_col, vol_val_col = st.sidebar.columns([1, 2])
 
@@ -125,7 +122,7 @@ HOSE_ALL_398 = sorted(list(set([
     'HVN', 'HVX', 'ICT', 'IDI', 'IJC', 'IMP', 'ITA', 'ITC', 'ITD', 'JVC', 'KBC', 'KDC', 'KDH', 'KHG', 'KHP', 'KMR', 
     'KOS', 'KSB', 'L10', 'LAF', 'LBM', 'LCG', 'LDG', 'LEC', 'LGL', 'LHG', 'LIX', 'LPB', 'LSS', 'MBB', 'MCP', 'MDG', 
     'MHG', 'MIG', 'MSH', 'MSN', 'MWG', 'NAF', 'NBB', 'NCT', 'NHA', 'NHH', 'NKG', 'NLG', 'NLT', 'NT2', 'NTL', 'NVL', 
-    'OCB', 'OGC', 'OPC', 'ORORS', 'PAN', 'PC1', 'PDN', 'PDR', 'PET', 'PGC', 'PGD', 'PGI', 'PLX', 'PNG', 'PNJ', 'POM', 
+    'OCB', 'OGC', 'OPC', 'PAN', 'PC1', 'PDN', 'PDR', 'PET', 'PGC', 'PGD', 'PGI', 'PLX', 'PNG', 'PNJ', 'POM', 
     'POW', 'PTB', 'PTC', 'PTL', 'PVD', 'PVT', 'QCG', 'RAL', 'REE', 'RDP', 'SAB', 'SB1', 'SBT', 'SBV', 'SC5', 'SCS', 
     'SFC', 'SFG', 'SGN', 'SHA', 'SHB', 'SHP', 'SIP', 'SJD', 'SJF', 'SKG', 'SMA', 'SMC', 'SPM', 'SRC', 'SRF', 'SSB', 
     'SSI', 'ST8', 'STB', 'STK', 'SVC', 'SVD', 'SVT', 'SZC', 'SZL', 'TAC', 'TBC', 'TCB', 'TCH', 'TCL', 'TCM', 'TCO', 
@@ -147,27 +144,15 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def get_http_session():
-    session = requests.Session()
-    retries = Retry(total=3, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504, 429])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-    return session
-
 def process_single(symbol):
-    # Cấu hình Headers chuẩn tránh bị hệ thống TCBS chặn API
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Origin': 'https://tcinvest.tcbs.com.vn',
-        'Referer': 'https://tcinvest.tcbs.com.vn/'
-    }
     now_str = datetime.now().strftime('%d/%m/%Y lúc %H:%M:%S')
-    session = get_http_session()
+    
+    # API VnDirect công khai, ổn định tuyệt đối trên Streamlit Cloud
+    url = f"https://fserver.vndirect.com.vn/v4/stock_prices?q=code:{symbol}~date:gte:2024-01-01&sort=date:desc&size=40"
+    headers = {'User-Agent': 'Mozilla/5.0'}
     
     try:
-        url = f"https://apipub.tcbs.com.vn/stock-insight/v1/stock/bars-long-term?ticker={symbol}&type=stock&resolution=D&countBack=40"
-        res = session.get(url, headers=headers, timeout=5.0)
-        
+        res = requests.get(url, headers=headers, timeout=5.0)
         if res.status_code == 200:
             js = res.json()
             data = js.get('data', [])
@@ -175,25 +160,18 @@ def process_single(symbol):
                 return None
                 
             df_temp = pd.DataFrame(data)
-            df_temp = df_temp.sort_values(by='tradingDate').reset_index(drop=True)
+            df_temp = df_temp.sort_values(by='date').reset_index(drop=True)
             
-            closes = df_temp['close'].astype(float)
-            vols = df_temp['volume'].astype(float)
+            closes = df_temp['close'].astype(float) * 1000
+            vols = df_temp['nmVolume'].astype(float)
             
             price_now = closes.iloc[-1]
-            if price_now < 1000:
-                price_now *= 1000
-                
-            # 1. Khối lượng phiên gần nhất (Khớp 100% với Vietstock/SSI)
             vol_now = vols.iloc[-1]
             
-            # 2. Khối lượng TB 20 phiên TRƯỚC ĐÓ (loại trừ phiên gần nhất)
             vol_avg20 = vols.iloc[-21:-1].mean()
             vol_spike = round(vol_now / vol_avg20, 2) if vol_avg20 > 0 else 1.0
             
             ma50_calc = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else closes.mean()
-            if ma50_calc < 1000: 
-                ma50_calc *= 1000
             
             rsi_series = calculate_rsi(closes, 14)
             rsi_raw = rsi_series.iloc[-1]
@@ -227,7 +205,7 @@ def scan_all_data_with_progress():
     status_text = st.empty()
     
     x = 0
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=8) as executor:
         future_to_symbol = {executor.submit(process_single, symbol): symbol for symbol in tasks}
         
         for future in as_completed(future_to_symbol):
@@ -281,7 +259,6 @@ if btn or "df_cached" in st.session_state:
                 (df_all['Giá'] >= df_all['Đường MA50'])
             ]
             
-        # Áp dụng bộ lọc Khối lượng giao dịch phiên gần nhất
         if vol_operator == "≥":
             res = res[res['Khối lượng'] >= target_vol]
         elif vol_operator == ">":
@@ -296,7 +273,7 @@ if btn or "df_cached" in st.session_state:
         st.markdown(f"### 🎉 Kết quả: Tìm thấy **{len(res)}** cổ phiếu đạt tiêu chí (Đã rà soát **{len(df_all)}** mã)")
         
         if len(res) == 0:
-            st.warning("Không tìm thấy cổ phiếu nào thỏa mãn. Bạn thử thay đổi tiêu chí nhé!")
+            st.warning("Không tìm thấy cổ phiếu nào thỏa mãn. Bạn thử hạ bớt tiêu chí lọc nhé!")
         else:
             for _, row in res.iterrows():
                 st.markdown(f"""
@@ -310,3 +287,5 @@ if btn or "df_cached" in st.session_state:
                     <p style="color:#ff00ff; font-size:14px; margin-top:8px;">💡 <b>Đánh giá 6 tháng:</b> Cổ phiếu có tín hiệu mua tích lũy tốt.</p>
                 </div>
                 """, unsafe_allow_html=True)
+    else:
+        st.error("Không thể lấy dữ liệu. Bạn hãy bấm lại nút Rà soát để thử lại!")
