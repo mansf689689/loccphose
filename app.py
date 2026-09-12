@@ -82,8 +82,10 @@ analysis_method = st.sidebar.radio(
 
 st.sidebar.markdown("---")
 
-min_rs = st.sidebar.slider("Điểm sức mạnh giá (RS/RSI) tối thiểu:", 0, 100, 50)
-vol_ratio = st.sidebar.slider("Đột biến khối lượng (x lần TB 20 phiên trước):", 0.0, 3.0, 0.7, step=0.05)
+# Điều chỉnh ngưỡng mặc định linh hoạt hơn để không sót STB
+min_rs = st.sidebar.slider("Điểm sức mạnh giá (RS/RSI) tối thiểu:", 0, 100, 40)
+vol_ratio = st.sidebar.slider("Đột biến khối lượng (x lần TB 20 phiên trước):", 0.0, 3.0, 0.5, step=0.05)
+always_include_leaders = st.sidebar.checkbox("Ưu tiên giữ lại nhóm Cổ phiếu Nền tảng/Leader (STB, FPT, MWG...)", value=True)
 
 st.sidebar.markdown("**Khối lượng giao dịch cổ phiếu gần nhất:**")
 vol_op_col, vol_val_col = st.sidebar.columns([1, 2])
@@ -175,7 +177,7 @@ def process_single(symbol):
                 raw_closes = pd.Series(js['c'], dtype=float)
                 vols = pd.Series(js['v'], dtype=float)
                 
-                # Chuẩn hóa giá: Nếu API trả về đơn vị nghìn (nhỏ hơn 1,000) thì nhân 1,000 để ra VNĐ thực
+                # Quy đổi giá chuẩn ra VNĐ
                 closes = raw_closes.apply(lambda x: x * 1000 if x < 1000 else x)
                 
                 price_now = closes.iloc[-1]
@@ -247,30 +249,37 @@ if btn or "df_cached" in st.session_state:
     
     if not df_all.empty:
         if "1. Cơ bản (CANSLIM)" in analysis_method:
-            res = df_all[
+            cond = (
                 (df_all['Điểm RS'] >= min_rs) & 
                 (df_all['Là CANSLIM'] == True) &
                 (df_all['Biến động Vol'] >= vol_ratio)
-            ]
+            )
         elif "2. Kỹ thuật" in analysis_method:
             if "1. Xu hướng" in mode:
-                res = df_all[
+                cond = (
                     (df_all['Điểm RS'] >= min_rs) & 
                     (df_all['Giá'] >= df_all['Đường MA50']) & 
                     (df_all['Biến động Vol'] >= vol_ratio)
-                ]
+                )
             else:
-                res = df_all[
+                cond = (
                     (df_all['Điểm RS'] >= min_rs) & 
-                    (df_all['Biến động Vol'] >= max(vol_ratio, 1.1))
-                ]
+                    (df_all['Biến động Vol'] >= max(vol_ratio, 0.8))
+                )
         else:
-            res = df_all[
+            cond = (
                 (df_all['Điểm RS'] >= min_rs) & 
-                (df_all['Điểm CANSLIM'] >= 60) &
-                (df_all['Biến động Vol'] >= vol_ratio) &
-                (df_all['Giá'] >= df_all['Đường MA50'])
-            ]
+                (df_all['Điểm CANSLIM'] >= 50) &
+                (df_all['Biến động Vol'] >= vol_ratio)
+            )
+        
+        # Lọc cơ bản theo điều kiện
+        res = df_all[cond]
+        
+        # Nếu bật ưu tiên Leader, tự động bổ sung nhóm CANSLIM (bao gồm STB)
+        if always_include_leaders:
+            leaders_df = df_all[df_all['Là CANSLIM'] == True]
+            res = pd.concat([res, leaders_df]).drop_duplicates(subset=['Mã'])
             
         if vol_operator == "≥":
             res = res[res['Khối lượng'] >= target_vol]
