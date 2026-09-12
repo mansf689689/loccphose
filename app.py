@@ -1,7 +1,10 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
+import time
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="Bộ Lọc Cổ Phiếu HOSE Realtime - Tiềm Năng 6 Tháng", layout="wide")
@@ -137,6 +140,12 @@ CANSLIM_LEADERS = [
     'PNJ', 'VNM', 'STB', 'SSI', 'VCB', 'CTG', 'VHC', 'DCM', 'DPM', 'HAH'
 ]
 
+def get_session():
+    session = requests.Session()
+    retries = Retry(total=3, backoff_factor=0.2, status_forcelist=[500, 502, 503, 504, 429])
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+    return session
+
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -146,52 +155,54 @@ def calculate_rsi(series, period=14):
 
 def process_single(symbol):
     now_str = datetime.now().strftime('%d/%m/%Y lúc %H:%M:%S')
+    session = get_session()
     
-    # API VnDirect công khai, ổn định tuyệt đối trên Streamlit Cloud
-    url = f"https://fserver.vndirect.com.vn/v4/stock_prices?q=code:{symbol}~date:gte:2024-01-01&sort=date:desc&size=40"
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    # Tính mốc thời gian 90 ngày chuẩn xác cho VnDirect API
+    end_time = int(time.time())
+    start_time = int((datetime.now() - timedelta(days=120)).timestamp())
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Referer': 'https://dchart.vndirect.com.vn/'
+    }
+    
+    url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution=D&symbol={symbol}&from={start_time}&to={end_time}"
     
     try:
-        res = requests.get(url, headers=headers, timeout=5.0)
+        res = session.get(url, headers=headers, timeout=4.0)
         if res.status_code == 200:
             js = res.json()
-            data = js.get('data', [])
-            if not data or len(data) < 22:
-                return None
+            if js.get('s') == 'ok' and len(js.get('c', [])) >= 22:
+                closes = pd.Series(js['c'], dtype=float)
+                vols = pd.Series(js['v'], dtype=float)
                 
-            df_temp = pd.DataFrame(data)
-            df_temp = df_temp.sort_values(by='date').reset_index(drop=True)
-            
-            closes = df_temp['close'].astype(float) * 1000
-            vols = df_temp['nmVolume'].astype(float)
-            
-            price_now = closes.iloc[-1]
-            vol_now = vols.iloc[-1]
-            
-            vol_avg20 = vols.iloc[-21:-1].mean()
-            vol_spike = round(vol_now / vol_avg20, 2) if vol_avg20 > 0 else 1.0
-            
-            ma50_calc = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else closes.mean()
-            
-            rsi_series = calculate_rsi(closes, 14)
-            rsi_raw = rsi_series.iloc[-1]
-            rsi_val = round(float(rsi_raw), 1) if not pd.isna(rsi_raw) else 50.0
-            
-            is_canslim = symbol in CANSLIM_LEADERS
-            canslim_score = int(min(max(rsi_val + (20 if is_canslim else 0), 10), 99))
-            
-            return {
-                'Mã': symbol,
-                'Giá': float(price_now),
-                'Khối lượng': float(vol_now),
-                'Thời gian': now_str,
-                'Đường MA50': float(ma50_calc),
-                'Biến động Vol': vol_spike,
-                'Điểm RS': rsi_val,
-                'Điểm CANSLIM': canslim_score,
-                'Là CANSLIM': is_canslim,
-                'Xu hướng': 'Tăng' if price_now >= ma50_calc else 'Giảm/Tích lũy'
-            }
+                price_now = closes.iloc[-1]
+                vol_now = vols.iloc[-1]
+                
+                vol_avg20 = vols.iloc[-21:-1].mean()
+                vol_spike = round(vol_now / vol_avg20, 2) if vol_avg20 > 0 else 1.0
+                
+                ma50_calc = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else closes.mean()
+                
+                rsi_series = calculate_rsi(closes, 14)
+                rsi_raw = rsi_series.iloc[-1]
+                rsi_val = round(float(rsi_raw), 1) if not pd.isna(rsi_raw) else 50.0
+                
+                is_canslim = symbol in CANSLIM_LEADERS
+                canslim_score = int(min(max(rsi_val + (20 if is_canslim else 0), 10), 99))
+                
+                return {
+                    'Mã': symbol,
+                    'Giá': float(price_now),
+                    'Khối lượng': float(vol_now),
+                    'Thời gian': now_str,
+                    'Đường MA50': float(ma50_calc),
+                    'Biến động Vol': vol_spike,
+                    'Điểm RS': rsi_val,
+                    'Điểm CANSLIM': canslim_score,
+                    'Là CANSLIM': is_canslim,
+                    'Xu hướng': 'Tăng' if price_now >= ma50_calc else 'Giảm/Tích lũy'
+                }
     except Exception:
         pass
     return None
@@ -205,7 +216,8 @@ def scan_all_data_with_progress():
     status_text = st.empty()
     
     x = 0
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    # Thiết lập max_workers = 6 để tránh quá tải kết nối API
+    with ThreadPoolExecutor(max_workers=6) as executor:
         future_to_symbol = {executor.submit(process_single, symbol): symbol for symbol in tasks}
         
         for future in as_completed(future_to_symbol):
@@ -273,7 +285,7 @@ if btn or "df_cached" in st.session_state:
         st.markdown(f"### 🎉 Kết quả: Tìm thấy **{len(res)}** cổ phiếu đạt tiêu chí (Đã rà soát **{len(df_all)}** mã)")
         
         if len(res) == 0:
-            st.warning("Không tìm thấy cổ phiếu nào thỏa mãn. Bạn thử hạ bớt tiêu chí lọc nhé!")
+            st.warning("Không tìm thấy cổ phiếu nào thỏa mãn tiêu chí hiện tại. Hãy thử hạ bớt điểm RS hoặc biến động Vol ở góc trái!")
         else:
             for _, row in res.iterrows():
                 st.markdown(f"""
