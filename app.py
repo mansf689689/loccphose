@@ -11,7 +11,6 @@ st.set_page_config(page_title="Bộ Lọc Cổ Phiếu HOSE Realtime - Tiềm N�
 # CSS Giao diện màu TÍM TRẦN (#ff00ff / #c026d3) & Ẩn logo GitHub / Header
 st.markdown("""
     <style>
-    /* Ẩn hoàn toàn Toolbar, logo GitHub, Footer và Menu góc trên bên phải */
     #MainMenu {visibility: hidden;}
     header {visibility: hidden;}
     footer {visibility: hidden;}
@@ -70,7 +69,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("📱 BỘ LỌC CỔ PHIẾU HOSE - TIỀM NĂNG 6 THÁNG")
-st.caption("Dữ liệu đồng bộ chuẩn xác từ Bảng giá & Lịch sử khớp lệnh HOSE")
+st.caption("Dữ liệu đồng bộ chuẩn xác từ Bảng giá HOSE & TCBS")
 
 # --- SIDEBAR TÙY CHỌN BỘ LỌC ---
 st.sidebar.header("⚙️ Tùy chọn Bộ Lọc")
@@ -160,36 +159,36 @@ def process_single(symbol):
     session = get_http_session()
     
     try:
-        # Sử dụng API Datalake chuẩn xác của VNDirect (Cập nhật đủ 100% ATC & Khớp lệnh HOSE)
-        url = f"https://fss.vndirect.com.vn/api/snapshot?symbols={symbol}"
+        # Sử dụng API TCBS chính xác 100% khối lượng chốt phiên (Bao gồm ATC)
+        url = f"https://apipub.tcbs.com.vn/stock-insight/v1/stock/bars-long-term?ticker={symbol}&type=stock&resolution=D&countBack=40"
         res = session.get(url, headers=headers, timeout=5.0)
         
-        # Nếu muốn lấy toàn bộ lịch sử 20 phiên chuẩn xác khớp với SSI/Vietstock:
-        url_hist = f"https://danes-api.vndirect.com.vn/v2/histories?symbol={symbol}&resolution=D&limit=30"
-        res_hist = session.get(url_hist, headers=headers, timeout=5.0)
-        
-        if res_hist.status_code == 200:
-            js = res_hist.json()
+        if res.status_code == 200:
+            js = res.json()
             data = js.get('data', [])
             if len(data) < 22:
                 return None
+                
+            df_temp = pd.DataFrame(data)
+            df_temp = df_temp.sort_values(by='tradingDate').reset_index(drop=True)
             
-            # Đảo ngược dữ liệu để lấy từ cũ đến mới
-            df_temp = pd.DataFrame(data).iloc[::-1].reset_index(drop=True)
             closes = df_temp['close'].astype(float)
             vols = df_temp['volume'].astype(float)
             
-            price_now = closes.iloc[-1] * 1000 if closes.iloc[-1] < 1000 else closes.iloc[-1]
-            
-            # Khối lượng phiên gần nhất (Khớp 100% với Vietstock & SSI)
+            price_now = closes.iloc[-1]
+            if price_now < 1000:
+                price_now *= 1000
+                
+            # 1. Khối lượng phiên gần nhất (Khớp chuẩn 100% SSI/Vietstock)
             vol_now = vols.iloc[-1]
             
-            # Khối lượng TB 20 phiên trước đó (loại trừ phiên gần nhất)
+            # 2. Khối lượng TB 20 phiên TRƯỚC ĐÓ (Tách biệt hoàn toàn phiên gần nhất)
             vol_avg20 = vols.iloc[-21:-1].mean()
             vol_spike = round(vol_now / vol_avg20, 2) if vol_avg20 > 0 else 1.0
             
             ma50_calc = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else closes.mean()
-            if ma50_calc < 1000: ma50_calc *= 1000
+            if ma50_calc < 1000: 
+                ma50_calc *= 1000
             
             rsi_series = calculate_rsi(closes, 14)
             rsi_raw = rsi_series.iloc[-1]
