@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="Bộ Lọc Cổ Phiếu HOSE Realtime - Tiềm Năng 6 Tháng", layout="wide")
@@ -117,62 +119,60 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
+# Tạo Session kết nối bền vững có cơ chế tự động thử lại khi lỗi mạng
+def get_http_session():
+    session = requests.Session()
+    retries = Retry(total=3, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504, 429])
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+    return session
+
 def process_single(symbol):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     now_str = datetime.now().strftime('%d/%m/%Y lúc %H:%M:%S')
+    session = get_http_session()
     
-    for attempt in range(2):
-        try:
-            url = f"https://services.entrade.com.vn/chart-api/v2/ohlcs/stock?from=0&to=9999999999&symbol={symbol}&resolution=1D"
-            res = requests.get(url, headers=headers, timeout=3.5)
-            if res.status_code == 200:
-                js = res.json()
-                if 'c' not in js or len(js['c']) < 20:
-                    return None
-                    
-                # Làm sạch dữ liệu, loại bỏ giá trị rỗng/lỗi
-                df_temp = pd.DataFrame({'c': js['c'], 'v': js['v']}).dropna()
-                closes = df_temp['c'].astype(float)
-                vols = df_temp['v'].astype(float)
+    try:
+        url = f"https://services.entrade.com.vn/chart-api/v2/ohlcs/stock?from=0&to=9999999999&symbol={symbol}&resolution=1D"
+        res = session.get(url, headers=headers, timeout=5.0)
+        
+        if res.status_code == 200:
+            js = res.json()
+            if 'c' not in js or len(js['c']) < 20:
+                return None
                 
-                # Chuẩn hóa giá
-                price_now = closes.iloc[-1] * 1000 if closes.iloc[-1] < 1000 else closes.iloc[-1]
-                vol_now = vols.iloc[-1]
-                    
-                # Tính MA50
-                ma50_calc = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else closes.mean()
-                if ma50_calc < 1000: ma50_calc *= 1000
+            df_temp = pd.DataFrame({'c': js['c'], 'v': js['v']}).dropna()
+            closes = df_temp['c'].astype(float)
+            vols = df_temp['v'].astype(float)
+            
+            price_now = closes.iloc[-1] * 1000 if closes.iloc[-1] < 1000 else closes.iloc[-1]
+            vol_now = vols.iloc[-1]
                 
-                # Tính trung bình Vol 20 phiên chuẩn
-                vol_avg20 = vols.iloc[-21:-1].mean() if len(vols) >= 21 else vols.iloc[:-1].mean()
-                vol_spike = round(vol_now / vol_avg20, 2) if vol_avg20 > 0 else 1.0
-                
-                # Tính RSI ổn định (Làm tròn chính xác)
-                rsi_series = calculate_rsi(closes, 14)
-                rsi_raw = rsi_series.iloc[-1]
-                
-                if pd.isna(rsi_raw):
-                    rsi_val = 50
-                else:
-                    # Làm tròn 1 chữ số thập phân để tránh sai số vi mô
-                    rsi_val = round(float(rsi_raw), 1)
-                
-                is_canslim = symbol in CANSLIM_LEADERS
-                canslim_score = int(min(max(rsi_val + (20 if is_canslim else 0), 10), 99))
-                
-                return {
-                    'Mã': symbol,
-                    'Giá': float(price_now),
-                    'Thời gian': now_str,
-                    'Đường MA50': float(ma50_calc),
-                    'Biến động Vol': vol_spike,
-                    'Điểm RS': rsi_val,
-                    'Điểm CANSLIM': canslim_score,
-                    'Là CANSLIM': is_canslim,
-                    'Xu hướng': 'Tăng' if price_now >= ma50_calc else 'Giảm/Tích lũy'
-                }
-        except Exception:
-            pass
+            ma50_calc = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else closes.mean()
+            if ma50_calc < 1000: ma50_calc *= 1000
+            
+            vol_avg20 = vols.iloc[-21:-1].mean() if len(vols) >= 21 else vols.iloc[:-1].mean()
+            vol_spike = round(vol_now / vol_avg20, 2) if vol_avg20 > 0 else 1.0
+            
+            rsi_series = calculate_rsi(closes, 14)
+            rsi_raw = rsi_series.iloc[-1]
+            rsi_val = round(float(rsi_raw), 1) if not pd.isna(rsi_raw) else 50.0
+            
+            is_canslim = symbol in CANSLIM_LEADERS
+            canslim_score = int(min(max(rsi_val + (20 if is_canslim else 0), 10), 99))
+            
+            return {
+                'Mã': symbol,
+                'Giá': float(price_now),
+                'Thời gian': now_str,
+                'Đường MA50': float(ma50_calc),
+                'Biến động Vol': vol_spike,
+                'Điểm RS': rsi_val,
+                'Điểm CANSLIM': canslim_score,
+                'Là CANSLIM': is_canslim,
+                'Xu hướng': 'Tăng' if price_now >= ma50_calc else 'Giảm/Tích lũy'
+            }
+    except Exception:
+        pass
     return None
 
 def scan_all_data_with_progress():
@@ -184,8 +184,8 @@ def scan_all_data_with_progress():
     status_text = st.empty()
     
     x = 0
-    # Giảm max_workers xuống 20 để tránh bị server API chặn/bỏ rơi request
-    with ThreadPoolExecutor(max_workers=20) as executor:
+    # Giảm luồng xuống 12 để tránh tuyệt đối việc API Entrade chặn IP hoặc nghẽn mạng Streamlit
+    with ThreadPoolExecutor(max_workers=12) as executor:
         future_to_symbol = {executor.submit(process_single, symbol): symbol for symbol in tasks}
         
         for future in as_completed(future_to_symbol):
