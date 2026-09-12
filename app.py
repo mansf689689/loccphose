@@ -83,9 +83,9 @@ analysis_method = st.sidebar.radio(
 st.sidebar.markdown("---")
 
 # Điều chỉnh ngưỡng mặc định linh hoạt hơn để không sót STB
-min_rs = st.sidebar.slider("Điểm sức mạnh giá (RS/RSI) tối thiểu:", 0, 100, 40)
-vol_ratio = st.sidebar.slider("Đột biến khối lượng (x lần TB 20 phiên trước):", 0.0, 3.0, 0.5, step=0.05)
-always_include_leaders = st.sidebar.checkbox("Ưu tiên giữ lại nhóm Cổ phiếu Nền tảng/Leader (STB, FPT, MWG...)", value=True)
+min_rs = st.sidebar.slider("Điểm sức mạnh giá (RS/RSI) tối thiểu:", 0, 100, 50)
+vol_ratio = st.sidebar.slider("Đột biến khối lượng (x lần TB 20 phiên trước):", 0.0, 3.0, 0.79, step=0.05)
+always_include_leaders = st.sidebar.checkbox("Ưu tiên giữ lại nhóm Cổ phiếu Nền tảng/Leader (STB, FPT, MWG...)", value=False)
 
 st.sidebar.markdown("**Khối lượng giao dịch cổ phiếu gần nhất:**")
 vol_op_col, vol_val_col = st.sidebar.columns([1, 2])
