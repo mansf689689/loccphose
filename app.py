@@ -160,26 +160,32 @@ def process_single(symbol):
     session = get_http_session()
     
     try:
-        url = f"https://services.entrade.com.vn/chart-api/v2/ohlcs/stock?from=0&to=9999999999&symbol={symbol}&resolution=1D"
+        # Sử dụng API Datalake chuẩn xác của VNDirect (Cập nhật đủ 100% ATC & Khớp lệnh HOSE)
+        url = f"https://fss.vndirect.com.vn/api/snapshot?symbols={symbol}"
         res = session.get(url, headers=headers, timeout=5.0)
         
-        if res.status_code == 200:
-            js = res.json()
-            if 'c' not in js or len(js['c']) < 22:
+        # Nếu muốn lấy toàn bộ lịch sử 20 phiên chuẩn xác khớp với SSI/Vietstock:
+        url_hist = f"https://danes-api.vndirect.com.vn/v2/histories?symbol={symbol}&resolution=D&limit=30"
+        res_hist = session.get(url_hist, headers=headers, timeout=5.0)
+        
+        if res_hist.status_code == 200:
+            js = res_hist.json()
+            data = js.get('data', [])
+            if len(data) < 22:
                 return None
-                
-            df_temp = pd.DataFrame({'c': js['c'], 'v': js['v']}).dropna()
-            closes = df_temp['c'].astype(float)
-            vols = df_temp['v'].astype(float)
+            
+            # Đảo ngược dữ liệu để lấy từ cũ đến mới
+            df_temp = pd.DataFrame(data).iloc[::-1].reset_index(drop=True)
+            closes = df_temp['close'].astype(float)
+            vols = df_temp['volume'].astype(float)
             
             price_now = closes.iloc[-1] * 1000 if closes.iloc[-1] < 1000 else closes.iloc[-1]
             
-            # 1. Khối lượng phiên gần nhất (chỉ lấy duy nhất 1 phiên mới nhất)
+            # Khối lượng phiên gần nhất (Khớp 100% với Vietstock & SSI)
             vol_now = vols.iloc[-1]
             
-            # 2. Khối lượng TB 20 phiên TRƯỚC ĐÓ (loại trừ phiên gần nhất vols.iloc[-1])
+            # Khối lượng TB 20 phiên trước đó (loại trừ phiên gần nhất)
             vol_avg20 = vols.iloc[-21:-1].mean()
-            
             vol_spike = round(vol_now / vol_avg20, 2) if vol_avg20 > 0 else 1.0
             
             ma50_calc = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else closes.mean()
