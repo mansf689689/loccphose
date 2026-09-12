@@ -157,7 +157,6 @@ def process_single(symbol):
     now_str = datetime.now().strftime('%d/%m/%Y lúc %H:%M:%S')
     session = get_session()
     
-    # Tính mốc thời gian 90 ngày chuẩn xác cho VnDirect API
     end_time = int(time.time())
     start_time = int((datetime.now() - timedelta(days=120)).timestamp())
     
@@ -173,8 +172,11 @@ def process_single(symbol):
         if res.status_code == 200:
             js = res.json()
             if js.get('s') == 'ok' and len(js.get('c', [])) >= 22:
-                closes = pd.Series(js['c'], dtype=float)
+                raw_closes = pd.Series(js['c'], dtype=float)
                 vols = pd.Series(js['v'], dtype=float)
+                
+                # Chuẩn hóa giá: Nếu API trả về đơn vị nghìn (nhỏ hơn 1,000) thì nhân 1,000 để ra VNĐ thực
+                closes = raw_closes.apply(lambda x: x * 1000 if x < 1000 else x)
                 
                 price_now = closes.iloc[-1]
                 vol_now = vols.iloc[-1]
@@ -216,7 +218,6 @@ def scan_all_data_with_progress():
     status_text = st.empty()
     
     x = 0
-    # Thiết lập max_workers = 6 để tránh quá tải kết nối API
     with ThreadPoolExecutor(max_workers=6) as executor:
         future_to_symbol = {executor.submit(process_single, symbol): symbol for symbol in tasks}
         
@@ -291,11 +292,11 @@ if btn or "df_cached" in st.session_state:
                 st.markdown(f"""
                 <div class="card">
                     <h2 class="stock-header">📌 Mã Cổ Phiếu: {row['Mã']}</h2>
-                    <p><b>Giá thực tế khớp lệnh:</b> <span class="price-tag">{int(row['Giá']):,} VNĐ</span> <span class="time-note">(Cập nhật: {row['Thời gian']})</span></p>
+                    <p><b>Giá thực tế khớp lệnh:</b> <span class="price-tag">{int(round(row['Giá'])):,} VNĐ</span> <span class="time-note">(Cập nhật: {row['Thời gian']})</span></p>
                     <p><b>Khối lượng giao dịch gần nhất:</b> <span class="vol-tag">{int(row['Khối lượng']):,} cổ phiếu</span></p>
                     <p><b>Sức mạnh giá (RSI 14):</b> <span class="rs-tag">{row['Điểm RS']}/100</span> | <b>Đánh giá CANSLIM:</b> {row['Điểm CANSLIM']}/100</p>
                     <p><b>Dòng tiền thời gian thực:</b> Khối lượng gấp <span class="vol-tag">{row['Biến động Vol']} lần</span> TB 20 phiên trước</p>
-                    <p><b>Xu hướng kỹ thuật:</b> <span style="color:#00ff99;">{row['Xu hướng']}</span> (Đường MA50: {int(row['Đường MA50']):,} VNĐ)</p>
+                    <p><b>Xu hướng kỹ thuật:</b> <span style="color:#00ff99;">{row['Xu hướng']}</span> (Đường MA50: {int(round(row['Đường MA50'])):,} VNĐ)</p>
                     <p style="color:#ff00ff; font-size:14px; margin-top:8px;">💡 <b>Đánh giá 6 tháng:</b> Cổ phiếu có tín hiệu mua tích lũy tốt.</p>
                 </div>
                 """, unsafe_allow_html=True)
