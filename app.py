@@ -75,15 +75,15 @@ with st.expander("⚙️ **NHẤP VÀO ĐÂY ĐỂ ĐIỀU CHỈNH TÙY CHỌN B
             "Phương pháp phân tích:",
             ("1. Cơ bản (CANSLIM)", "2. Kỹ thuật (Dòng tiền/RS)", "3. Lọc Kết hợp (Khuyến dùng)")
         )
-        min_rs = st.slider("Điểm sức mạnh giá (RS/RSI) tối thiểu:", 0, 100, 40)
-        vol_ratio = st.slider("Đột biến khối lượng (x lần TB 20 phiên trước):", 0.0, 3.0, 0.5, step=0.05)
+        min_rs = st.slider("Điểm sức mạnh giá (RS/RSI) tối thiểu:", 0, 100, 50)
+        vol_ratio = st.slider("Đột biến khối lượng (x lần TB 20 phiên trước):", 0.0, 3.0, 0.79, step=0.05)
 
     with col_filter2:
         mode = st.radio(
             "Phương pháp chọn lọc:",
             ("1. Xu hướng & Dòng tiền mạnh (Kỹ thuật)", "2. Cổ phiếu bứt phá nền giá (Breakout)")
         )
-        always_include_leaders = st.checkbox("Ưu tiên giữ lại nhóm Cổ phiếu Nền tảng/Leader (STB, FPT, MWG...)", value=True)
+        always_include_leaders = st.checkbox("Ưu tiên giữ lại nhóm Cổ phiếu Nền tảng/Leader (STB, FPT, MWG...)", value=False)
         
         st.markdown("**Khối lượng giao dịch cổ phiếu gần nhất:**")
         vol_op_col, vol_val_col = st.columns([1, 2])
