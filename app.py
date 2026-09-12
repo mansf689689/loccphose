@@ -118,49 +118,55 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def process_single(symbol):
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     now_str = datetime.now().strftime('%d/%m/%Y lúc %H:%M:%S')
     
-    try:
-        url = f"https://services.entrade.com.vn/chart-api/v2/ohlcs/stock?from=0&to=9999999999&symbol={symbol}&resolution=1D"
-        res = requests.get(url, headers=headers, timeout=1.5)
-        if res.status_code == 200:
-            js = res.json()
-            closes = pd.Series(js['c']).astype(float)
-            vols = pd.Series(js['v']).astype(float)
-            
-            price_now = closes.iloc[-1] * 1000 if closes.iloc[-1] < 1000 else closes.iloc[-1]
-            vol_now = vols.iloc[-1]
+    # Thử lại tối đa 2 lần nếu mạng chập chờn
+    for attempt in range(2):
+        try:
+            url = f"https://services.entrade.com.vn/chart-api/v2/ohlcs/stock?from=0&to=9999999999&symbol={symbol}&resolution=1D"
+            # Tăng timeout lên 3.5 giây để tránh bỏ sót cổ phiếu
+            res = requests.get(url, headers=headers, timeout=3.5)
+            if res.status_code == 200:
+                js = res.json()
+                if 'c' not in js or len(js['c']) == 0:
+                    return None
+                    
+                closes = pd.Series(js['c']).astype(float)
+                vols = pd.Series(js['v']).astype(float)
                 
-            ma50_calc = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else closes.mean()
-            if ma50_calc < 1000: ma50_calc *= 1000
-            
-            if len(vols) >= 21:
-                vol_avg20 = vols.iloc[-21:-1].mean()
-            else:
-                vol_avg20 = vols.iloc[:-1].mean() if len(vols) > 1 else vols.mean()
+                price_now = closes.iloc[-1] * 1000 if closes.iloc[-1] < 1000 else closes.iloc[-1]
+                vol_now = vols.iloc[-1]
+                    
+                ma50_calc = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else closes.mean()
+                if ma50_calc < 1000: ma50_calc *= 1000
                 
-            vol_spike = round(vol_now / vol_avg20, 2) if vol_avg20 > 0 else 1.0
-            
-            rsi_series = calculate_rsi(closes, 14)
-            rsi_val = int(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50
-            
-            is_canslim = symbol in CANSLIM_LEADERS
-            canslim_score = int(min(max(rsi_val + (20 if is_canslim else 0), 10), 99))
-            
-            return {
-                'Mã': symbol,
-                'Giá': float(price_now),
-                'Thời gian': now_str,
-                'Đường MA50': float(ma50_calc),
-                'Biến động Vol': vol_spike,
-                'Điểm RS': rsi_val,
-                'Điểm CANSLIM': canslim_score,
-                'Là CANSLIM': is_canslim,
-                'Xu hướng': 'Tăng' if price_now >= ma50_calc else 'Giảm/Tích lũy'
-            }
-    except Exception:
-        pass
+                if len(vols) >= 21:
+                    vol_avg20 = vols.iloc[-21:-1].mean()
+                else:
+                    vol_avg20 = vols.iloc[:-1].mean() if len(vols) > 1 else vols.mean()
+                    
+                vol_spike = round(vol_now / vol_avg20, 2) if vol_avg20 > 0 else 1.0
+                
+                rsi_series = calculate_rsi(closes, 14)
+                rsi_val = int(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50
+                
+                is_canslim = symbol in CANSLIM_LEADERS
+                canslim_score = int(min(max(rsi_val + (20 if is_canslim else 0), 10), 99))
+                
+                return {
+                    'Mã': symbol,
+                    'Giá': float(price_now),
+                    'Thời gian': now_str,
+                    'Đường MA50': float(ma50_calc),
+                    'Biến động Vol': vol_spike,
+                    'Điểm RS': rsi_val,
+                    'Điểm CANSLIM': canslim_score,
+                    'Là CANSLIM': is_canslim,
+                    'Xu hướng': 'Tăng' if price_now >= ma50_calc else 'Giảm/Tích lũy'
+                }
+        except Exception:
+            pass
     return None
 
 def scan_all_data_with_progress():
@@ -172,7 +178,8 @@ def scan_all_data_with_progress():
     status_text = st.empty()
     
     x = 0
-    with ThreadPoolExecutor(max_workers=35) as executor:
+    # Giảm max_workers xuống 20 để tránh bị server API chặn/bỏ rơi request
+    with ThreadPoolExecutor(max_workers=20) as executor:
         future_to_symbol = {executor.submit(process_single, symbol): symbol for symbol in tasks}
         
         for future in as_completed(future_to_symbol):
