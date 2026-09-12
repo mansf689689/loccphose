@@ -121,35 +121,41 @@ def process_single(symbol):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     now_str = datetime.now().strftime('%d/%m/%Y lúc %H:%M:%S')
     
-    # Thử lại tối đa 2 lần nếu mạng chập chờn
     for attempt in range(2):
         try:
             url = f"https://services.entrade.com.vn/chart-api/v2/ohlcs/stock?from=0&to=9999999999&symbol={symbol}&resolution=1D"
-            # Tăng timeout lên 3.5 giây để tránh bỏ sót cổ phiếu
             res = requests.get(url, headers=headers, timeout=3.5)
             if res.status_code == 200:
                 js = res.json()
-                if 'c' not in js or len(js['c']) == 0:
+                if 'c' not in js or len(js['c']) < 20:
                     return None
                     
-                closes = pd.Series(js['c']).astype(float)
-                vols = pd.Series(js['v']).astype(float)
+                # Làm sạch dữ liệu, loại bỏ giá trị rỗng/lỗi
+                df_temp = pd.DataFrame({'c': js['c'], 'v': js['v']}).dropna()
+                closes = df_temp['c'].astype(float)
+                vols = df_temp['v'].astype(float)
                 
+                # Chuẩn hóa giá
                 price_now = closes.iloc[-1] * 1000 if closes.iloc[-1] < 1000 else closes.iloc[-1]
                 vol_now = vols.iloc[-1]
                     
+                # Tính MA50
                 ma50_calc = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else closes.mean()
                 if ma50_calc < 1000: ma50_calc *= 1000
                 
-                if len(vols) >= 21:
-                    vol_avg20 = vols.iloc[-21:-1].mean()
-                else:
-                    vol_avg20 = vols.iloc[:-1].mean() if len(vols) > 1 else vols.mean()
-                    
+                # Tính trung bình Vol 20 phiên chuẩn
+                vol_avg20 = vols.iloc[-21:-1].mean() if len(vols) >= 21 else vols.iloc[:-1].mean()
                 vol_spike = round(vol_now / vol_avg20, 2) if vol_avg20 > 0 else 1.0
                 
+                # Tính RSI ổn định (Làm tròn chính xác)
                 rsi_series = calculate_rsi(closes, 14)
-                rsi_val = int(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50
+                rsi_raw = rsi_series.iloc[-1]
+                
+                if pd.isna(rsi_raw):
+                    rsi_val = 50
+                else:
+                    # Làm tròn 1 chữ số thập phân để tránh sai số vi mô
+                    rsi_val = round(float(rsi_raw), 1)
                 
                 is_canslim = symbol in CANSLIM_LEADERS
                 canslim_score = int(min(max(rsi_val + (20 if is_canslim else 0), 10), 99))
