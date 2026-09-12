@@ -8,9 +8,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="Bộ Lọc Cổ Phiếu HOSE Realtime - Tiềm Năng 6 Tháng", layout="wide")
 
-# CSS Giao diện màu TÍM TRẦN (#ff00ff / #c026d3)
+# CSS Giao diện màu TÍM TRẦN (#ff00ff / #c026d3) & Ẩn logo GitHub / Header
 st.markdown("""
     <style>
+    /* Ẩn hoàn toàn Toolbar, logo GitHub, Footer và Menu góc trên bên phải */
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    div[data-testid="stToolbar"] {visibility: hidden !important;}
+
     .main {background-color: #0e1117; color: #ffffff;}
     h1 {color: #c026d3; text-align: center; font-size: 26px; font-weight: bold;}
     
@@ -77,7 +83,30 @@ analysis_method = st.sidebar.radio(
 st.sidebar.markdown("---")
 
 min_rs = st.sidebar.slider("Điểm sức mạnh giá (RS/RSI) tối thiểu:", 0, 100, 50)
-vol_ratio = st.sidebar.slider("Đột biến khối lượng (x lần TB 20 phiên):", 0.0, 3.0, 0.7, step=0.05)
+vol_ratio = st.sidebar.slider("Đột biến khối lượng (x lần TB 20 phiên trước):", 0.0, 3.0, 0.7, step=0.05)
+
+# --- BỔ SUNG LỰA CHỌN KHỐI LƯỢNG GIAO DỊCH PHIÊN GẦN NHẤT ---
+st.sidebar.markdown("**Khối lượng giao dịch cổ phiếu gần nhất:**")
+vol_op_col, vol_val_col = st.sidebar.columns([1, 2])
+
+with vol_op_col:
+    vol_operator = st.selectbox(
+        "Phép so sánh",
+        ("≥", ">", "=", "<", "≤"),
+        label_visibility="collapsed"
+    )
+
+with vol_val_col:
+    target_vol = st.number_input(
+        "Số lượng cổ phiếu",
+        min_value=0,
+        max_value=10000000000,
+        value=0,
+        step=100000,
+        label_visibility="collapsed"
+    )
+
+st.sidebar.markdown("---")
 
 mode = st.sidebar.radio(
     "Phương pháp chọn lọc:",
@@ -119,7 +148,6 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# Tạo Session kết nối bền vững có cơ chế tự động thử lại khi lỗi mạng
 def get_http_session():
     session = requests.Session()
     retries = Retry(total=3, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504, 429])
@@ -137,7 +165,7 @@ def process_single(symbol):
         
         if res.status_code == 200:
             js = res.json()
-            if 'c' not in js or len(js['c']) < 20:
+            if 'c' not in js or len(js['c']) < 22:
                 return None
                 
             df_temp = pd.DataFrame({'c': js['c'], 'v': js['v']}).dropna()
@@ -145,13 +173,17 @@ def process_single(symbol):
             vols = df_temp['v'].astype(float)
             
             price_now = closes.iloc[-1] * 1000 if closes.iloc[-1] < 1000 else closes.iloc[-1]
+            
+            # 1. Khối lượng phiên gần nhất (chỉ lấy duy nhất 1 phiên mới nhất)
             vol_now = vols.iloc[-1]
-                
+            
+            # 2. Khối lượng TB 20 phiên TRƯỚC ĐÓ (loại trừ phiên gần nhất vols.iloc[-1])
+            vol_avg20 = vols.iloc[-21:-1].mean()
+            
+            vol_spike = round(vol_now / vol_avg20, 2) if vol_avg20 > 0 else 1.0
+            
             ma50_calc = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else closes.mean()
             if ma50_calc < 1000: ma50_calc *= 1000
-            
-            vol_avg20 = vols.iloc[-21:-1].mean() if len(vols) >= 21 else vols.iloc[:-1].mean()
-            vol_spike = round(vol_now / vol_avg20, 2) if vol_avg20 > 0 else 1.0
             
             rsi_series = calculate_rsi(closes, 14)
             rsi_raw = rsi_series.iloc[-1]
@@ -163,6 +195,7 @@ def process_single(symbol):
             return {
                 'Mã': symbol,
                 'Giá': float(price_now),
+                'Khối lượng': float(vol_now),
                 'Thời gian': now_str,
                 'Đường MA50': float(ma50_calc),
                 'Biến động Vol': vol_spike,
@@ -184,7 +217,6 @@ def scan_all_data_with_progress():
     status_text = st.empty()
     
     x = 0
-    # Giảm luồng xuống 12 để tránh tuyệt đối việc API Entrade chặn IP hoặc nghẽn mạng Streamlit
     with ThreadPoolExecutor(max_workers=12) as executor:
         future_to_symbol = {executor.submit(process_single, symbol): symbol for symbol in tasks}
         
@@ -239,18 +271,31 @@ if btn or "df_cached" in st.session_state:
                 (df_all['Giá'] >= df_all['Đường MA50'])
             ]
             
+        # Áp dụng bộ lọc Khối lượng giao dịch phiên gần nhất
+        if vol_operator == "≥":
+            res = res[res['Khối lượng'] >= target_vol]
+        elif vol_operator == ">":
+            res = res[res['Khối lượng'] > target_vol]
+        elif vol_operator == "=":
+            res = res[res['Khối lượng'] == target_vol]
+        elif vol_operator == "<":
+            res = res[res['Khối lượng'] < target_vol]
+        elif vol_operator == "≤":
+            res = res[res['Khối lượng'] <= target_vol]
+
         st.markdown(f"### 🎉 Kết quả: Tìm thấy **{len(res)}** cổ phiếu đạt tiêu chí (Đã rà soát **{len(df_all)}** mã)")
         
         if len(res) == 0:
-            st.warning("Không tìm thấy cổ phiếu nào thỏa mãn. Bạn thử hạ nhẹ thanh trượt nhé!")
+            st.warning("Không tìm thấy cổ phiếu nào thỏa mãn. Bạn thử thay đổi tiêu chí nhé!")
         else:
             for _, row in res.iterrows():
                 st.markdown(f"""
                 <div class="card">
                     <h2 class="stock-header">📌 Mã Cổ Phiếu: {row['Mã']}</h2>
                     <p><b>Giá thực tế khớp lệnh:</b> <span class="price-tag">{int(row['Giá']):,} VNĐ</span> <span class="time-note">(Cập nhật: {row['Thời gian']})</span></p>
+                    <p><b>Khối lượng giao dịch gần nhất:</b> <span class="vol-tag">{int(row['Khối lượng']):,} cổ phiếu</span></p>
                     <p><b>Sức mạnh giá (RSI 14):</b> <span class="rs-tag">{row['Điểm RS']}/100</span> | <b>Đánh giá CANSLIM:</b> {row['Điểm CANSLIM']}/100</p>
-                    <p><b>Dòng tiền thời gian thực:</b> Khối lượng gấp <span class="vol-tag">{row['Biến động Vol']} lần</span> TB 20 phiên</p>
+                    <p><b>Dòng tiền thời gian thực:</b> Khối lượng gấp <span class="vol-tag">{row['Biến động Vol']} lần</span> TB 20 phiên trước</p>
                     <p><b>Xu hướng kỹ thuật:</b> <span style="color:#00ff99;">{row['Xu hướng']}</span> (Đường MA50: {int(row['Đường MA50']):,} VNĐ)</p>
                     <p style="color:#ff00ff; font-size:14px; margin-top:8px;">💡 <b>Đánh giá 6 tháng:</b> Cổ phiếu có tín hiệu mua tích lũy tốt.</p>
                 </div>
