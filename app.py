@@ -154,19 +154,24 @@ def get_http_session():
     return session
 
 def process_single(symbol):
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    # Cấu hình Headers chuẩn tránh bị hệ thống TCBS chặn API
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Origin': 'https://tcinvest.tcbs.com.vn',
+        'Referer': 'https://tcinvest.tcbs.com.vn/'
+    }
     now_str = datetime.now().strftime('%d/%m/%Y lúc %H:%M:%S')
     session = get_http_session()
     
     try:
-        # Sử dụng API TCBS chính xác 100% khối lượng chốt phiên (Bao gồm ATC)
         url = f"https://apipub.tcbs.com.vn/stock-insight/v1/stock/bars-long-term?ticker={symbol}&type=stock&resolution=D&countBack=40"
         res = session.get(url, headers=headers, timeout=5.0)
         
         if res.status_code == 200:
             js = res.json()
             data = js.get('data', [])
-            if len(data) < 22:
+            if not data or len(data) < 22:
                 return None
                 
             df_temp = pd.DataFrame(data)
@@ -179,10 +184,10 @@ def process_single(symbol):
             if price_now < 1000:
                 price_now *= 1000
                 
-            # 1. Khối lượng phiên gần nhất (Khớp chuẩn 100% SSI/Vietstock)
+            # 1. Khối lượng phiên gần nhất (Khớp 100% với Vietstock/SSI)
             vol_now = vols.iloc[-1]
             
-            # 2. Khối lượng TB 20 phiên TRƯỚC ĐÓ (Tách biệt hoàn toàn phiên gần nhất)
+            # 2. Khối lượng TB 20 phiên TRƯỚC ĐÓ (loại trừ phiên gần nhất)
             vol_avg20 = vols.iloc[-21:-1].mean()
             vol_spike = round(vol_now / vol_avg20, 2) if vol_avg20 > 0 else 1.0
             
@@ -222,7 +227,7 @@ def scan_all_data_with_progress():
     status_text = st.empty()
     
     x = 0
-    with ThreadPoolExecutor(max_workers=12) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_symbol = {executor.submit(process_single, symbol): symbol for symbol in tasks}
         
         for future in as_completed(future_to_symbol):
