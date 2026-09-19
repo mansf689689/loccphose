@@ -3,13 +3,17 @@ import pandas as pd
 from datetime import datetime, timedelta
 import time
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-st.set_page_config(page_title="Bộ Lọc Cổ Phiếu HOSE Realtime - CANSLIM & RS Leader", layout="wide")
+# Gọi trực tiếp thư viện vnstock3 (Máy chủ Cloud sẽ tự nạp thư viện này)
+try:
+    from vnstock3 import Vnstock
+except Exception as e:
+    st.error("Đang khởi tạo môi trường Cloud, vui lòng làm mới trang sau vài giây...")
 
-# --- CSS GIỮ NGUYÊN GIAO DIỆN HIỆN TẠI ---
+st.set_page_config(page_title="Bộ Lọc Cổ Phiếu CANSLIM - Cloud", layout="wide")
+
+# --- CSS TỐI ƯU GIAO DIỆN PHONG CÁCH CHECKLIST ---
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -18,89 +22,71 @@ st.markdown("""
     div[data-testid="stToolbar"] {visibility: hidden !important;}
 
     .main {background-color: #0e1117; color: #ffffff;}
-    h1 {color: #c026d3; text-align: center; font-size: 24px; font-weight: bold;}
+    h1 {color: #10b981; text-align: center; font-size: 24px; font-weight: bold;}
     
-    .stButton>button {width: 100%; background-color: #9333ea; color: white; border-radius: 10px; height: 3.2em; font-weight: bold; font-size: 16px; border: none;}
-    .stButton>button:hover {background-color: #c026d3; color: white;}
-    
-    div[data-baseweb="radio"] label div[aria-checked="true"] {
-        background-color: #c026d3 !important;
-        border-color: #ff00ff !important;
-    }
-    div[data-baseweb="radio"] label div[aria-checked="true"] > div {
-        background-color: #ff00ff !important;
-    }
+    .stButton>button {width: 100%; background-color: #059669; color: white; border-radius: 10px; height: 3.2em; font-weight: bold; font-size: 16px; border: none;}
+    .stButton>button:hover {background-color: #10b981; color: white;}
 
-    div[data-baseweb="slider"] div[role="slider"] {
-        background-color: #ff00ff !important;
-        border-color: #ffffff !important;
-        box-shadow: 0 0 10px #ff00ff !important;
-    }
-    div[data-baseweb="slider"] div {
-        background-color: #c026d3 !important;
-    }
-    
-    .card {
-        background-color: #1e222d; 
-        padding: 16px; 
+    .card-pass {
+        background-color: #064e3b; 
+        padding: 18px; 
         border-radius: 12px; 
-        border: 1px solid #2a2e39; 
+        border: 2px solid #10b981; 
         margin-bottom: 15px;
         color: #e0e0e0;
     }
-    .card h2.stock-header { 
-        color: #ff00ff !important; 
-        font-size: 20px; 
+    .card-watch {
+        background-color: #1e222d; 
+        padding: 18px; 
+        border-radius: 12px; 
+        border: 1px solid #d97706; 
+        margin-bottom: 15px;
+        color: #e0e0e0;
+    }
+    .stock-header { 
+        font-size: 22px; 
         margin-top: 0; 
         font-weight: bold;
-        text-shadow: 0 0 8px rgba(255, 0, 255, 0.4);
     }
-    .card p { font-size: 14px; margin: 6px 0; color: #d1d5db; }
-    .price-tag { color: #ffcc00; font-size: 17px; font-weight: bold; }
-    .time-note { color: #9ca3af; font-size: 12px; font-style: italic; }
-    .rs-tag { color: #51cf66; font-weight: bold; }
-    .vol-tag { color: #ff922b; font-weight: bold; }
-    .badge {
-        background-color: #9333ea;
+    .badge-pass {
+        background-color: #10b981;
         color: white;
-        padding: 2px 8px;
-        border-radius: 4px;
-        font-size: 12px;
+        padding: 3px 10px;
+        border-radius: 6px;
+        font-size: 13px;
         font-weight: bold;
-        margin-right: 5px;
     }
+    .badge-fail {
+        background-color: #ef4444;
+        color: white;
+        padding: 3px 10px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: bold;
+    }
+    .check-item {
+        font-size: 14px;
+        margin: 6px 0;
+    }
+    .price-tag { color: #f59e0b; font-size: 16px; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📱 BỘ LỌC CỔ PHIẾU HOSE - CANSLIM & DÒNG TIỀN DỘNG")
-st.caption("Tự động phân tích Tăng trưởng BCTC (Cách A) & Xếp hạng Leader RS Top 20% (Cách B)")
+st.title("🛡️ BỘ LỌC CỔ PHIẾU CANSLIM CHÍNH THỐNG")
+st.caption("Chạy 100% trên Đám mây - Không cần cài đặt trên thiết bị người dùng")
 
-# --- KHU VỰC TÙY CHỌN BỘ LỌC ---
-with st.expander("⚙️ **NHẤP VÀO ĐÂY ĐỂ ĐIỀU CHỈNH TÙY CHỌN BỘ LỌC**", expanded=True):
-    col_filter1, col_filter2 = st.columns(2)
+# --- KHU VỰC ĐIỀU CHỈNH TIÊU CHÍ ĐỊNH LƯỢNG CANSLIM ---
+with st.expander("⚙️ **CẤU HÌNH TIÊU CHÍ BỘ LỌC CANSLIM**", expanded=True):
+    col1, col2 = st.columns(2)
+    with col1:
+        min_c_eps = st.number_input("C - Tăng trưởng EPS/LNST Quý tối thiểu (%):", value=25.0, step=5.0)
+        min_c_rev = st.number_input("C - Tăng trưởng Doanh thu Quý tối thiểu (%):", value=20.0, step=5.0)
+        min_a_eps = st.number_input("A - Tăng trưởng LNST Năm gần nhất tối thiểu (%):", value=20.0, step=5.0)
     
-    with col_filter1:
-        analysis_method = st.radio(
-            "Phương pháp phân tích:",
-            ("1. Cơ bản (CANSLIM Tăng trưởng Quý)", "2. Kỹ thuật (Leader RS Top 20% & Dòng tiền)", "3. Lọc Kết hợp (Cơ bản + Kỹ thuật Khuyên dùng)"),
-            index=1
-        )
-        min_rs = st.slider("Điểm sức mạnh giá (RS/RSI) tối thiểu:", 0, 100, 50)
-        vol_ratio = st.slider("Đột biến khối lượng (x lần TB 20 phiên trước):", 0.0, 3.0, 0.70, step=0.01)
-
-    with col_filter2:
-        mode = st.radio(
-            "Phương pháp chọn lọc:",
-            ("1. Xu hướng & Dòng tiền mạnh (Kỹ thuật)", "2. Cổ phiếu bứt phá nền giá (Breakout)")
-        )
-        always_include_leaders = st.checkbox("Ưu tiên giữ lại nhóm Cổ phiếu Leader Top 20% RS & Tăng trưởng BCTC", value=False)
-        
-        st.markdown("**Khối lượng giao dịch cổ phiếu gần nhất:**")
-        vol_op_col, vol_val_col = st.columns([1, 2])
-        with vol_op_col:
-            vol_operator = st.selectbox("Phép so sánh", ("≥", ">", "=", "<", "≤"), label_visibility="collapsed")
-        with vol_val_col:
-            target_vol = st.number_input("Số lượng cổ phiếu", min_value=0, max_value=10000000000, value=0, step=100000, label_visibility="collapsed")
+    with col2:
+        min_s_vol = st.number_input("S - Khối lượng bứt phá (x lần TB 20 phiên):", value=1.40, step=0.1)
+        min_l_rs = st.number_input("L - Xếp hạng Sức mạnh giá RS Percentile (Top %):", value=80, max_value=99, min_value=50)
+        filter_type = st.radio("Chế độ hiển thị:", ("Chỉ hiển thị cổ phiếu ĐẠT TẤT CẢ tiêu chí (Chuẩn O'Neil)", "Hiển thị cả Cổ phiếu Tiềm năng (Chỉ vi phạm 1 tiêu chí)"))
 
 HOSE_ALL_398 = sorted(list(set([
     'AAA', 'AAM', 'ABR', 'ABS', 'ABT', 'ACB', 'ACC', 'ACG', 'ACI', 'ACL', 'ADG', 'ADP', 'ADS', 'AGG', 'AGM', 'AGR', 
@@ -125,12 +111,6 @@ HOSE_ALL_398 = sorted(list(set([
     'VPG', 'VPH', 'VPI', 'VPS', 'VRC', 'VRE', 'VSC', 'VSH', 'VSI', 'VTB', 'VTO', 'YBM', 'YEG'
 ])))
 
-def get_session():
-    session = requests.Session()
-    retries = Retry(total=2, backoff_factor=0.2, status_forcelist=[500, 502, 503, 504, 429])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-    return session
-
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -138,74 +118,74 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# --- LẤY BCTC CÓ TIMEOUT NGẮN TRÁNH BỊ TREO ---
-def fetch_fundamental_raw(symbol, session):
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-    
+# LẤY BCTC TRÊN MÁY CHỦ CLOUD BẰNG VNSTOCK3
+def fetch_fundamental_vnstock(symbol):
     try:
-        url = f"https://apipub.tcbs.com.vn/tca/v1/finance/income-statement/{symbol}?type=quarter"
-        # Khoá timeout 2.0s để server chậm không làm gián đoạn tiến trình
-        res = session.get(url, headers=headers, timeout=2.0)
-        if res.status_code == 200:
-            data = res.json()
-            if isinstance(data, list) and len(data) >= 2:
-                q_latest, q_prev = data[0], data[1]
-                
-                lnst_curr = q_latest.get('postTaxProfit', 0) or 0
-                lnst_prev = q_prev.get('postTaxProfit', 0) or 0
-                
-                eps_g = ((lnst_curr - lnst_prev) / abs(lnst_prev)) * 100 if lnst_prev != 0 else (100.0 if lnst_curr > 0 else 0.0)
-                
-                rev_curr = q_latest.get('revenue', 0) or q_latest.get('netInterestIncome', 0) or 0
-                rev_prev = q_prev.get('revenue', 0) or q_prev.get('netInterestIncome', 0) or 0
-                
-                rev_g = ((rev_curr - rev_prev) / abs(rev_prev)) * 100 if rev_prev != 0 else (100.0 if rev_curr > 0 else 0.0)
-                
-                return round(eps_g, 1), round(rev_g, 1)
+        stock = Vnstock().stock(symbol=symbol, source='VND')
+        df_q = stock.finance.income_statement(period='quarter', lang='vi')
+        c_eps_g, c_rev_g = None, None
+        
+        if not df_q.empty and len(df_q) >= 2:
+            col_lnst = [c for c in df_q.columns if 'Lợi nhuận sau thuế' in c or 'cổ đông công ty mẹ' in c]
+            lnst_col = col_lnst[0] if col_lnst else df_q.columns[1]
+            
+            col_rev = [c for c in df_q.columns if 'Thu nhập lãi thuần' in c or 'Doanh thu thuần' in c]
+            rev_col = col_rev[0] if col_rev else df_q.columns[2]
+            
+            lnst_curr = float(df_q.iloc[0][lnst_col])
+            lnst_prev = float(df_q.iloc[1][lnst_col])
+            rev_curr = float(df_q.iloc[0][rev_col])
+            rev_prev = float(df_q.iloc[1][rev_col])
+            
+            c_eps_g = ((lnst_curr - lnst_prev) / abs(lnst_prev)) * 100 if lnst_prev != 0 else (100.0 if lnst_curr > 0 else 0.0)
+            c_rev_g = ((rev_curr - rev_prev) / abs(rev_prev)) * 100 if rev_prev != 0 else (100.0 if rev_curr > 0 else 0.0)
+
+        df_y = stock.finance.income_statement(period='year', lang='vi')
+        a_eps_g = None
+        if not df_y.empty and len(df_y) >= 2:
+            col_lnst_y = [c for c in df_y.columns if 'Lợi nhuận sau thuế' in c or 'cổ đông công ty mẹ' in c]
+            lnst_y_col = col_lnst_y[0] if col_lnst_y else df_y.columns[1]
+            
+            lnst_y_curr = float(df_y.iloc[0][lnst_y_col])
+            lnst_y_prev = float(df_y.iloc[1][lnst_y_col])
+            
+            a_eps_g = ((lnst_y_curr - lnst_y_prev) / abs(lnst_y_prev)) * 100 if lnst_y_prev != 0 else (100.0 if lnst_y_curr > 0 else 0.0)
+
+        return round(c_eps_g, 1) if c_eps_g is not None else None, \
+               round(c_rev_g, 1) if c_rev_g is not None else None, \
+               round(a_eps_g, 1) if a_eps_g is not None else None
     except Exception:
         pass
+    return None, None, None
 
-    return None, None
-
-# --- CHẠY MULTI-THREAD TỐC ĐỘ CAO CHO CACHE BCTC ---
 @st.cache_data(ttl=43200)
 def get_all_fundamentals_cached(symbols_tuple):
-    session = get_session()
     results = {}
-    with ThreadPoolExecutor(max_workers=15) as executor:
-        future_to_symbol = {executor.submit(fetch_fundamental_raw, sym, session): sym for sym in symbols_tuple}
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_symbol = {executor.submit(fetch_fundamental_vnstock, sym): sym for sym in symbols_tuple}
         for future in as_completed(future_to_symbol):
             sym = future_to_symbol[future]
             try:
-                eps_g, rev_g = future.result(timeout=2.5)
-                results[sym] = (eps_g, rev_g)
+                results[sym] = future.result(timeout=4.0)
             except Exception:
-                results[sym] = (None, None)
+                results[sym] = (None, None, None)
     return results
 
-def process_single_technical(symbol, session, fundamental_dict):
-    now_str = datetime.now().strftime('%d/%m/%Y lúc %H:%M:%S')
+def process_technical_data(symbol, fundamental_dict):
+    now_str = datetime.now().strftime('%d/%m/%Y %H:%M')
     end_time = int(time.time())
     start_time = int((datetime.now() - timedelta(days=120)).timestamp())
     
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://dchart.vndirect.com.vn/'
-    }
-    
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 'Referer': 'https://dchart.vndirect.com.vn/'}
     url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution=D&symbol={symbol}&from={start_time}&to={end_time}"
     
     try:
-        res = session.get(url, headers=headers, timeout=2.5)
+        res = requests.get(url, headers=headers, timeout=2.5)
         if res.status_code == 200:
             js = res.json()
             if js.get('s') == 'ok' and len(js.get('c', [])) >= 22:
-                raw_closes = pd.Series(js['c'], dtype=float)
+                closes = pd.Series(js['c'], dtype=float).apply(lambda x: x * 1000 if x < 1000 else x)
                 vols = pd.Series(js['v'], dtype=float)
-                
-                closes = raw_closes.apply(lambda x: x * 1000 if x < 1000 else x)
                 
                 price_now = closes.iloc[-1]
                 vol_now = vols.iloc[-1]
@@ -213,65 +193,46 @@ def process_single_technical(symbol, session, fundamental_dict):
                 vol_avg20 = vols.iloc[-21:-1].mean()
                 vol_spike = round(vol_now / vol_avg20, 2) if vol_avg20 > 0 else 1.0
                 
-                ma50_calc = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else closes.mean()
+                ma50 = closes.rolling(50).mean().iloc[-1] if len(closes) >= 50 else closes.mean()
+                rsi_val = round(float(calculate_rsi(closes, 14).iloc[-1]), 1)
                 
-                rsi_series = calculate_rsi(closes, 14)
-                rsi_raw = rsi_series.iloc[-1]
-                rsi_val = round(float(rsi_raw), 1) if not pd.isna(rsi_raw) else 50.0
-                
-                eps_g, rev_g = fundamental_dict.get(symbol, (None, None))
-                
-                if eps_g is not None and rev_g is not None:
-                    is_fundamental = (eps_g >= 15.0) or (rev_g >= 10.0)
-                else:
-                    is_fundamental = None
+                c_eps, c_rev, a_eps = fundamental_dict.get(symbol, (None, None, None))
                 
                 return {
                     'Mã': symbol,
                     'Giá': float(price_now),
                     'Khối lượng': float(vol_now),
                     'Thời gian': now_str,
-                    'Đường MA50': float(ma50_calc),
-                    'Biến động Vol': vol_spike,
-                    'Điểm RS': rsi_val,
-                    'Tăng trưởng LNST Quý (%)': eps_g,
-                    'Tăng trưởng Doanh thu (%)': rev_g,
-                    'CANSLIM Cơ bản': is_fundamental,
-                    'Xu hướng': 'Tăng' if price_now >= ma50_calc else 'Giảm/Tích lũy'
+                    'MA50': float(ma50),
+                    'Vol Spike': vol_spike,
+                    'RSI': rsi_val if not pd.isna(rsi_val) else 50.0,
+                    'C_EPS': c_eps,
+                    'C_REV': c_rev,
+                    'A_EPS': a_eps
                 }
     except Exception:
         pass
     return None
 
-def scan_all_data_with_progress():
+def run_canslim_official_filter():
     tasks = HOSE_ALL_398
-    y = len(tasks)
-    
     status_text = st.empty()
     progress_bar = st.progress(0)
     
-    status_text.markdown("⏳ **Bước 1/2: Đang đồng bộ dữ liệu BCTC toàn sàn (Siêu tốc)...**")
+    status_text.markdown("⏳ **Máy chủ Cloud đang tải BCTC từ Vnstock...**")
     progress_bar.progress(0.20)
     
     fundamental_dict = get_all_fundamentals_cached(tuple(tasks))
     
     results = []
     x = 0
-    session = get_session()
-    
-    status_text.markdown("⏳ **Bước 2/2: Đang phân tích Kỹ thuật & Dòng tiền Realtime...**")
+    status_text.markdown("⏳ **Máy chủ Cloud đang tính toán chỉ báo kỹ thuật & Checklist...**")
     
     with ThreadPoolExecutor(max_workers=12) as executor:
-        future_to_symbol = {executor.submit(process_single_technical, symbol, session, fundamental_dict): symbol for symbol in tasks}
-        
+        future_to_symbol = {executor.submit(process_technical_data, sym, fundamental_dict): sym for sym in tasks}
         for future in as_completed(future_to_symbol):
-            symbol = future_to_symbol[future]
             x += 1
-            l_percent = round((x / y) * 100, 2)
-            
-            status_text.markdown(f"⏳ **Đang rà soát dữ liệu kỹ thuật mã {symbol} ({x}/{y} mã - {l_percent}%)**")
-            progress_bar.progress(0.20 + 0.80 * (x / y))
-            
+            progress_bar.progress(0.20 + 0.80 * (x / len(tasks)))
             res = future.result()
             if res is not None:
                 results.append(res)
@@ -280,96 +241,87 @@ def scan_all_data_with_progress():
     progress_bar.empty()
     
     df = pd.DataFrame(results)
-    
     if not df.empty:
-        df['Xếp hạng RS Percentile'] = df['Điểm RS'].rank(pct=True) * 100
-        df['Leader RS Top 20%'] = (df['Xếp hạng RS Percentile'] >= 80.0) & (df['Giá'] >= df['Đường MA50'])
-        
-        def calc_score(row):
-            score = row['Điểm RS'] * 0.5
-            
-            if row['CANSLIM Cơ bản'] is True:
-                score += 25
-            elif row['CANSLIM Cơ bản'] is None:
-                score += 12.5 # Hỗ trợ điểm trung bình khi BCTC bị lỗi N/A
-                
-            if row['Leader RS Top 20%']:
-                score += 25
-                
-            return int(min(max(score, 10), 99))
-            
-        df['Điểm CANSLIM Động'] = df.apply(calc_score, axis=1)
-
+        df['RS_Percentile'] = (df['RSI'].rank(pct=True) * 100).astype(int)
     return df
 
-btn = st.button("🚀 BẮT ĐẦU RÀ SOÁT TOÀN BỘ SÀN HOSE (ĐỘNG)")
+btn = st.button("🚀 BẮT ĐẦU QUÉT BỘ LỌC CANSLIM CHÍNH THỐNG")
 
-if btn or "df_cached" in st.session_state:
-    if btn or "df_cached" not in st.session_state:
-        st.session_state["df_cached"] = scan_all_data_with_progress()
-            
-    df_all = st.session_state["df_cached"]
+if btn or "df_official" in st.session_state:
+    if btn or "df_official" not in st.session_state:
+        st.session_state["df_official"] = run_canslim_official_filter()
+        
+    df_all = st.session_state["df_official"]
     
     if not df_all.empty:
-        if "1. Cơ bản" in analysis_method:
-            cond = (df_all['Điểm RS'] >= min_rs) & (df_all['Biến động Vol'] >= vol_ratio) & (df_all['CANSLIM Cơ bản'] == True)
-        elif "2. Kỹ thuật" in analysis_method:
-            cond = (df_all['Điểm RS'] >= min_rs) & (df_all['Biến động Vol'] >= vol_ratio)
-        else:
-            cond = (df_all['Điểm RS'] >= min_rs) & (df_all['Biến động Vol'] >= vol_ratio)
-        
-        res = df_all[cond]
-        
-        if always_include_leaders:
-            leaders_df = df_all[(df_all['Leader RS Top 20%'] == True) | (df_all['CANSLIM Cơ bản'] == True)]
-            res = pd.concat([res, leaders_df]).drop_duplicates(subset=['Mã'])
+        processed_list = []
+        for _, row in df_all.iterrows():
+            pass_c = (row['C_EPS'] is not None and row['C_EPS'] >= min_c_eps) and \
+                     (row['C_REV'] is not None and row['C_REV'] >= min_c_rev)
+            pass_a = (row['A_EPS'] is not None and row['A_EPS'] >= min_a_eps)
+            pass_s = (row['Vol Spike'] >= min_s_vol)
+            pass_l = (row['RS_Percentile'] >= min_l_rs)
+            pass_m = (row['Giá'] >= row['MA50'])
             
-        if vol_operator == "≥":
-            res = res[res['Khối lượng'] >= target_vol]
-        elif vol_operator == ">":
-            res = res[res['Khối lượng'] > target_vol]
-        elif vol_operator == "=":
-            res = res[res['Khối lượng'] == target_vol]
-        elif vol_operator == "<":
-            res = res[res['Khối lượng'] < target_vol]
-        elif vol_operator == "≤":
-            res = res[res['Khối lượng'] <= target_vol]
-
-        res = res.sort_values(by='Điểm CANSLIM Động', ascending=False)
-
-        st.markdown(f"### 🎉 Kết quả: Tìm thấy **{len(res)}** cổ phiếu đạt tiêu chí (Đã rà soát **{len(df_all)}** mã)")
-        
-        for _, row in res.iterrows():
-            badges_html = ""
-            if row['CANSLIM Cơ bản'] is True:
-                badges_html += '<span class="badge" style="background-color:#059669;">BCTC Tăng trưởng tốt</span>'
-            elif row['CANSLIM Cơ bản'] is None:
-                badges_html += '<span class="badge" style="background-color:#6b7280;">BCTC: Đang cập nhật</span>'
-                
-            if row['Leader RS Top 20%']:
-                badges_html += '<span class="badge" style="background-color:#d97706;">Leader Top 20% RS</span>'
-
-            eps_val = row['Tăng trưởng LNST Quý (%)']
-            rev_val = row['Tăng trưởng Doanh thu (%)']
+            checks = [pass_c, pass_a, pass_s, pass_l, pass_m]
+            pass_count = sum(checks)
             
-            if eps_val is None or rev_val is None:
-                bctc_html = '<span style="color:#9ca3af; font-weight:bold;">Đang cập nhật BCTC (N/A)</span>'
+            if pass_count == 5:
+                status = "CHUẨN CANSLIM"
+            elif pass_count == 4:
+                status = "TIỀM NĂNG (THEO DÕI)"
             else:
-                eps_str = f"+{eps_val}%" if eps_val >= 0 else f"{eps_val}%"
-                rev_str = f"+{rev_val}%" if rev_val >= 0 else f"{rev_val}%"
-                bctc_html = f'<span style="color:#00ff99; font-weight:bold;">{eps_str}</span> | <b>Doanh thu:</b> <span style="color:#00ff99; font-weight:bold;">{rev_str}</span>'
-
+                status = "KHÔNG ĐẠT"
+                
+            processed_list.append({
+                **row.to_dict(),
+                'Pass_C': pass_c, 'Pass_A': pass_a, 'Pass_S': pass_s, 
+                'Pass_L': pass_l, 'Pass_M': pass_m,
+                'Pass_Count': pass_count,
+                'Status': status
+            })
+            
+        res_df = pd.DataFrame(processed_list)
+        
+        if "Chỉ hiển thị cổ phiếu ĐẠT TẤT CẢ" in filter_type:
+            final_df = res_df[res_df['Status'] == "CHUẨN CANSLIM"]
+        else:
+            final_df = res_df[res_df['Status'].isin(["CHUẨN CANSLIM", "TIỀM NĂNG (THEO DÕI)"])]
+            
+        final_df = final_df.sort_values(by=['Pass_Count', 'RS_Percentile'], ascending=[False, False])
+        
+        st.markdown(f"### 📋 Kết quả: Tìm thấy **{len(final_df)}** cổ phiếu (Đã quét **{len(df_all)}** mã)")
+        
+        if final_df.empty:
+            st.warning("Không có cổ phiếu nào đáp ứng đủ bộ tiêu chí. Bạn có thể hạ nhẹ tiêu chí ở mục Cấu hình!")
+        
+        for _, row in final_df.iterrows():
+            card_class = "card-pass" if row['Status'] == "CHUẨN CANSLIM" else "card-watch"
+            title_color = "#10b981" if row['Status'] == "CHUẨN CANSLIM" else "#f59e0b"
+            
+            def render_check(label, is_pass, detail_str):
+                icon = "🟢 **ĐẠT**" if is_pass else "🔴 **KHÔNG ĐẠT**"
+                return f"<div class='check-item'>• <b>{label}:</b> {icon} ({detail_str})</div>"
+            
+            c_str = f"LNST Quý: {f'+{row['C_EPS']}%' if row['C_EPS'] and row['C_EPS']>=0 else str(row['C_EPS'])+'%'} | Doanh thu: {f'+{row['C_REV']}%' if row['C_REV'] and row['C_REV']>=0 else str(row['C_REV'])+'%'}"
+            a_str = f"LNST Năm: {f'+{row['A_EPS']}%' if row['A_EPS'] and row['A_EPS']>=0 else str(row['A_EPS'])+'%'}"
+            s_str = f"Vol gấp {row['Vol Spike']} lần TB 20 phiên"
+            l_str = f"Xếp hạng RS: Top {100 - row['RS_Percentile']}% toàn sàn"
+            m_str = f"Giá ({int(round(row['Giá'])):,} VNĐ) {'nằm TRÊN' if row['Pass_M'] else 'nằm DƯỚI'} MA50 ({int(round(row['MA50'])):,} VNĐ)"
+            
             st.markdown(f"""
-            <div class="card">
-                <h2 class="stock-header">📌 Mã Cổ Phiếu: {row['Mã']} {badges_html}</h2>
-                <p><b>Giá thực tế khớp lệnh:</b> <span class="price-tag">{int(round(row['Giá'])):,} VNĐ</span> <span class="time-note">(Cập nhật: {row['Thời gian']})</span></p>
-                <p><b>Khối lượng giao dịch gần nhất:</b> <span class="vol-tag">{int(row['Khối lượng']):,} cổ phiếu</span></p>
-                <p><b>Sức mạnh giá (RSI 14):</b> <span class="rs-tag">{row['Điểm RS']}/100</span> (Xếp hạng RS: Top {100 - int(row['Xếp hạng RS Percentile'])}% thị trường)</p>
-                <p><b>Tăng trưởng LNST Quý gần nhất:</b> {bctc_html}</p>
-                <p><b>Dòng tiền thời gian thực:</b> Khối lượng gấp <span class="vol-tag">{row['Biến động Vol']} lần</span> TB 20 phiên trước</p>
-                <p><b>Xu hướng kỹ thuật:</b> <span style="color:#00ff99;">{row['Xu hướng']}</span> (Đường MA50: {int(round(row['Đường MA50'])):,} VNĐ)</p>
-                <p style="color:#ff00ff; font-size:14px; margin-top:8px;">💡 <b>Điểm đánh giá CANSLIM Động:</b> {row['Điểm CANSLIM Động']}/100</p>
+            <div class="{card_class}">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <h2 class="stock-header" style="color: {title_color}; margin:0;">📌 Mã Cổ Phiếu: {row['Mã']}</h2>
+                    <span class="{ 'badge-pass' if row['Status']=='CHUẨN CANSLIM' else 'badge-fail' }">{row['Status']} ({row['Pass_Count']}/5 Tiêu chí)</span>
+                </div>
+                <p style="margin-top: 8px;"><b>Giá khớp lệnh:</b> <span class="price-tag">{int(round(row['Giá'])):,} VNĐ</span> | <b>Khối lượng:</b> {int(row['Khối lượng']):,} CP</p>
+                <hr style="border-color: #374151; margin: 10px 0;">
+                <b>CHI TIẾT CHECKLIST CANSLIM CHÍNH THỐNG:</b>
+                {render_check("C - Tăng trưởng Quý", row['Pass_C'], c_str)}
+                {render_check("A - Tăng trưởng Năm", row['Pass_A'], a_str)}
+                {render_check("S - Dòng tiền Bứt phá", row['Pass_S'], s_str)}
+                {render_check("L - Cổ phiếu Leader", row['Pass_L'], l_str)}
+                {render_check("M - Xu hướng Thị trường/Giá", row['Pass_M'], m_str)}
             </div>
             """, unsafe_allow_html=True)
-    else:
-        st.error("Không thể lấy dữ liệu. Bạn hãy bấm lại nút Rà soát để thử lại!")
