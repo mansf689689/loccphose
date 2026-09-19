@@ -2,4 +2,4 @@ streamlit
 pandas
 requests
 urllib3
-vnstock3
+vnstock3>=3.0.0
