@@ -85,14 +85,15 @@ with st.expander("⚙️ **NHẤP VÀO ĐÂY ĐỂ ĐIỀU CHỈNH TÙY CHỌN B
             ("1. Cơ bản (CANSLIM Tăng trưởng Quý)", "2. Kỹ thuật (Leader RS Top 20% & Dòng tiền)", "3. Lọc Kết hợp (Cơ bản + Kỹ thuật Khuyên dùng)")
         )
         min_rs = st.slider("Điểm sức mạnh giá (RS/RSI) tối thiểu:", 0, 100, 50)
-        vol_ratio = st.slider("Đột biến khối lượng (x lần TB 20 phiên trước):", 0.0, 3.0, 0.5, step=0.05)
+        vol_ratio = st.slider("Đột biến khối lượng (x lần TB 20 phiên trước):", 0.0, 3.0, 0.79, step=0.01)
 
     with col_filter2:
         mode = st.radio(
             "Phương pháp chọn lọc:",
             ("1. Xu hướng & Dòng tiền mạnh (Kỹ thuật)", "2. Cổ phiếu bứt phá nền giá (Breakout)")
         )
-        always_include_leaders = st.checkbox("Ưu tiên giữ lại nhóm Cổ phiếu Leader Top 20% RS & Tăng trưởng BCTC", value=True)
+        # Đã cập nhật giá trị mặc định value=False (không chọn)
+        always_include_leaders = st.checkbox("Ưu tiên giữ lại nhóm Cổ phiếu Leader Top 20% RS & Tăng trưởng BCTC", value=False)
         
         st.markdown("**Khối lượng giao dịch cổ phiếu gần nhất:**")
         vol_op_col, vol_val_col = st.columns([1, 2])
@@ -137,7 +138,7 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# --- CÁCH A: LẤY VÀ PHÂN TÍCH TĂNG TRƯỞNG BCTC QUÝ TỪ API TCBS ---
+# CÁCH A: LẤY VÀ PHÂN TÍCH TĂNG TRƯỞNG BCTC QUÝ TỪ API TCBS
 def check_canslim_fundamental(symbol, session):
     try:
         url = f"https://apipub.tcbs.com.vn/tca/v1/finance/income-statement/{symbol}?type=quarter"
@@ -151,19 +152,16 @@ def check_canslim_fundamental(symbol, session):
                 rev_growth = 0.0
                 eps_growth = 0.0
                 
-                # Tính tăng trưởng Lợi nhuận sau thuế (C)
                 lnst_curr = q_latest.get('postTaxProfit', 0)
                 lnst_prev = q_previous.get('postTaxProfit', 0)
                 if lnst_prev and lnst_prev > 0:
                     eps_growth = ((lnst_curr - lnst_prev) / abs(lnst_prev)) * 100
                 
-                # Tính tăng trưởng Doanh thu
                 rev_curr = q_latest.get('revenue', 0)
                 rev_prev = q_previous.get('revenue', 0)
                 if rev_prev and rev_prev > 0:
                     rev_growth = ((rev_curr - rev_prev) / abs(rev_prev)) * 100
 
-                # Tiêu chuẩn CANSLIM: LNST tăng > 20% hoặc Doanh thu tăng > 15%
                 is_canslim_fundamental = (eps_growth >= 20.0) or (rev_growth >= 15.0)
                 return is_canslim_fundamental, round(eps_growth, 1), round(rev_growth, 1)
     except Exception:
@@ -192,7 +190,6 @@ def process_single(symbol):
                 raw_closes = pd.Series(js['c'], dtype=float)
                 vols = pd.Series(js['v'], dtype=float)
                 
-                # Nhân 1,000 quy đổi giá chuẩn VNĐ
                 closes = raw_closes.apply(lambda x: x * 1000 if x < 1000 else x)
                 
                 price_now = closes.iloc[-1]
@@ -207,7 +204,6 @@ def process_single(symbol):
                 rsi_raw = rsi_series.iloc[-1]
                 rsi_val = round(float(rsi_raw), 1) if not pd.isna(rsi_raw) else 50.0
                 
-                # Gọi kiểm tra tiêu chuẩn Tài chính (Cách A)
                 is_fundamental, eps_g, rev_g = check_canslim_fundamental(symbol, session)
                 
                 return {
@@ -256,14 +252,11 @@ def scan_all_data_with_progress():
     
     df = pd.DataFrame(results)
     
-    # --- CÁCH B: TỰ ĐỘNG LỌC LEADER THEO RS TOP 20% THỊ TRƯỜNG ---
+    # CÁCH B: TỰ ĐỘNG LỌC LEADER THEO RS TOP 20% THỊ TRƯỜNG
     if not df.empty:
-        # Xếp hạng RS trên toàn bộ cổ phiếu vừa cào được
         df['Xếp hạng RS Percentile'] = df['Điểm RS'].rank(pct=True) * 100
-        # Cổ phiếu nằm trong Top 20% RS cao nhất thị trường và nằm trên MA50
         df['Leader RS Top 20%'] = (df['Xếp hạng RS Percentile'] >= 80.0) & (df['Giá'] >= df['Đường MA50'])
         
-        # Đánh giá điểm tổng hợp CANSLIM (kết hợp cả A và B)
         def calc_score(row):
             score = row['Điểm RS'] * 0.5
             if row['CANSLIM Cơ bản']:
@@ -303,7 +296,7 @@ if btn or "df_cached" in st.session_state:
                     (df_all['Điểm RS'] >= min_rs) & 
                     (df_all['Biến động Vol'] >= max(vol_ratio, 0.8))
                 )
-        else: # Lọc Kết hợp
+        else:
             cond = (
                 (df_all['Điểm RS'] >= min_rs) & 
                 ((df_all['CANSLIM Cơ bản'] == True) | (df_all['Leader RS Top 20%'] == True)) &
@@ -333,7 +326,6 @@ if btn or "df_cached" in st.session_state:
             st.warning("Không tìm thấy cổ phiếu nào thỏa mãn tiêu chí hiện tại. Hãy thử hạ bớt điểm RS hoặc biến động Vol ở góc trên!")
         else:
             for _, row in res.iterrows():
-                # Tạo nhãn hiển thị trạng thái
                 badges_html = ""
                 if row['CANSLIM Cơ bản']:
                     badges_html += '<span class="badge" style="background-color:#059669;">BCTC Tăng trưởng tốt</span>'
