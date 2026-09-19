@@ -82,7 +82,8 @@ with st.expander("⚙️ **NHẤP VÀO ĐÂY ĐỂ ĐIỀU CHỈNH TÙY CHỌN B
     with col_filter1:
         analysis_method = st.radio(
             "Phương pháp phân tích:",
-            ("1. Cơ bản (CANSLIM Tăng trưởng Quý)", "2. Kỹ thuật (Leader RS Top 20% & Dòng tiền)", "3. Lọc Kết hợp (Cơ bản + Kỹ thuật Khuyên dùng)")
+            ("1. Cơ bản (CANSLIM Tăng trưởng Quý)", "2. Kỹ thuật (Leader RS Top 20% & Dòng tiền)", "3. Lọc Kết hợp (Cơ bản + Kỹ thuật Khuyên dùng)"),
+            index=2  # Mặc định chọn Lọc kết hợp để luôn có kết quả tối ưu
         )
         min_rs = st.slider("Điểm sức mạnh giá (RS/RSI) tối thiểu:", 0, 100, 50)
         vol_ratio = st.slider("Đột biến khối lượng (x lần TB 20 phiên trước):", 0.0, 3.0, 0.79, step=0.01)
@@ -92,7 +93,6 @@ with st.expander("⚙️ **NHẤP VÀO ĐÂY ĐỂ ĐIỀU CHỈNH TÙY CHỌN B
             "Phương pháp chọn lọc:",
             ("1. Xu hướng & Dòng tiền mạnh (Kỹ thuật)", "2. Cổ phiếu bứt phá nền giá (Breakout)")
         )
-        # Đã cập nhật giá trị mặc định value=False (không chọn)
         always_include_leaders = st.checkbox("Ưu tiên giữ lại nhóm Cổ phiếu Leader Top 20% RS & Tăng trưởng BCTC", value=False)
         
         st.markdown("**Khối lượng giao dịch cổ phiếu gần nhất:**")
@@ -142,7 +142,7 @@ def calculate_rsi(series, period=14):
 def check_canslim_fundamental(symbol, session):
     try:
         url = f"https://apipub.tcbs.com.vn/tca/v1/finance/income-statement/{symbol}?type=quarter"
-        res = session.get(url, timeout=2.5)
+        res = session.get(url, timeout=1.5)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) >= 2:
@@ -162,7 +162,8 @@ def check_canslim_fundamental(symbol, session):
                 if rev_prev and rev_prev > 0:
                     rev_growth = ((rev_curr - rev_prev) / abs(rev_prev)) * 100
 
-                is_canslim_fundamental = (eps_growth >= 20.0) or (rev_growth >= 15.0)
+                # Điều kiện linh hoạt:LNST tăng >15% hoặc Doanh thu tăng >10%
+                is_canslim_fundamental = (eps_growth >= 15.0) or (rev_growth >= 10.0)
                 return is_canslim_fundamental, round(eps_growth, 1), round(rev_growth, 1)
     except Exception:
         pass
@@ -183,7 +184,7 @@ def process_single(symbol):
     url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution=D&symbol={symbol}&from={start_time}&to={end_time}"
     
     try:
-        res = session.get(url, headers=headers, timeout=3.5)
+        res = session.get(url, headers=headers, timeout=3.0)
         if res.status_code == 200:
             js = res.json()
             if js.get('s') == 'ok' and len(js.get('c', [])) >= 22:
@@ -232,7 +233,7 @@ def scan_all_data_with_progress():
     status_text = st.empty()
     
     x = 0
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_symbol = {executor.submit(process_single, symbol): symbol for symbol in tasks}
         
         for future in as_completed(future_to_symbol):
@@ -281,8 +282,8 @@ if btn or "df_cached" in st.session_state:
         if "1. Cơ bản" in analysis_method:
             cond = (
                 (df_all['Điểm RS'] >= min_rs) & 
-                (df_all['CANSLIM Cơ bản'] == True) &
-                (df_all['Biến động Vol'] >= vol_ratio)
+                (df_all['Biến động Vol'] >= vol_ratio) &
+                ((df_all['CANSLIM Cơ bản'] == True) | (df_all['Tăng trưởng LNST Quý (%)'] > 0))
             )
         elif "2. Kỹ thuật" in analysis_method:
             if "1. Xu hướng" in mode:
@@ -299,7 +300,7 @@ if btn or "df_cached" in st.session_state:
         else:
             cond = (
                 (df_all['Điểm RS'] >= min_rs) & 
-                ((df_all['CANSLIM Cơ bản'] == True) | (df_all['Leader RS Top 20%'] == True)) &
+                ((df_all['CANSLIM Cơ bản'] == True) | (df_all['Leader RS Top 20%'] == True) | (df_all['Biến động Vol'] >= 1.0)) &
                 (df_all['Biến động Vol'] >= vol_ratio)
             )
         
@@ -323,7 +324,7 @@ if btn or "df_cached" in st.session_state:
         st.markdown(f"### 🎉 Kết quả: Tìm thấy **{len(res)}** cổ phiếu đạt tiêu chí (Đã rà soát **{len(df_all)}** mã)")
         
         if len(res) == 0:
-            st.warning("Không tìm thấy cổ phiếu nào thỏa mãn tiêu chí hiện tại. Hãy thử hạ bớt điểm RS hoặc biến động Vol ở góc trên!")
+            st.warning("Không tìm thấy cổ phiếu nào thỏa mãn tiêu chí hiện tại. Hãy thử hạ bớt điểm RS hoặc chuyển sang chế độ '3. Lọc Kết hợp'!")
         else:
             for _, row in res.iterrows():
                 badges_html = ""
