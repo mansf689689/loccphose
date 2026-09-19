@@ -127,7 +127,7 @@ HOSE_ALL_398 = sorted(list(set([
 
 def get_session():
     session = requests.Session()
-    retries = Retry(total=3, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504, 429])
+    retries = Retry(total=2, backoff_factor=0.2, status_forcelist=[500, 502, 503, 504, 429])
     session.mount('https://', HTTPAdapter(max_retries=retries))
     return session
 
@@ -138,16 +138,16 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# --- CẢI TIẾN 1: TÍNH TĂNG TRƯỞNG LẮP DỰ PHÒNG & XỬ LÝ BANK/CÔNG TY THƯỜNG ---
+# --- LẤY BCTC CÓ TIMEOUT NGẮN TRÁNH BỊ TREO ---
 def fetch_fundamental_raw(symbol, session):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
-    # Thử Nguồn 1: TCBS API
     try:
         url = f"https://apipub.tcbs.com.vn/tca/v1/finance/income-statement/{symbol}?type=quarter"
-        res = session.get(url, headers=headers, timeout=3.5)
+        # Khoá timeout 2.0s để server chậm không làm gián đoạn tiến trình
+        res = session.get(url, headers=headers, timeout=2.0)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) >= 2:
@@ -158,7 +158,6 @@ def fetch_fundamental_raw(symbol, session):
                 
                 eps_g = ((lnst_curr - lnst_prev) / abs(lnst_prev)) * 100 if lnst_prev != 0 else (100.0 if lnst_curr > 0 else 0.0)
                 
-                # Tự động lấy Doanh thu thuần hoặc Thu nhập lãi thuần (cho Ngân hàng)
                 rev_curr = q_latest.get('revenue', 0) or q_latest.get('netInterestIncome', 0) or 0
                 rev_prev = q_prev.get('revenue', 0) or q_prev.get('netInterestIncome', 0) or 0
                 
@@ -168,33 +167,22 @@ def fetch_fundamental_raw(symbol, session):
     except Exception:
         pass
 
-    # Thử Nguồn 2 Dự phòng: VNDIRECT API
-    try:
-        url2 = f"https://finfo-api.vndirect.com.vn/v4/financial_statements?q=ticker:{symbol}~reportType:QUARTER~modelCode:1,2,3,4&sort=period:-1&size=2"
-        res2 = session.get(url2, headers=headers, timeout=3.5)
-        if res2.status_code == 200:
-            js = res2.json()
-            items = js.get('data', [])
-            if len(items) >= 2:
-                # Phân tích cơ bản đơn giản nếu lấy thành công dữ liệu dự phòng
-                pass
-    except Exception:
-        pass
-
-    # Trả về None nếu hoàn toàn bị chặn/thiếu dữ liệu (Tránh trả về 0.0% bị phạt điểm oan)
     return None, None
 
-# --- CẢI TIẾN 2: LƯU CACHE DỮ LIỆU BCTC (LƯU TẠM 12 GIỜ TRÁNH BỊ CHẶN API) ---
+# --- CHẠY MULTI-THREAD TỐC ĐỘ CAO CHO CACHE BCTC ---
 @st.cache_data(ttl=43200)
 def get_all_fundamentals_cached(symbols_tuple):
     session = get_session()
     results = {}
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    with ThreadPoolExecutor(max_workers=15) as executor:
         future_to_symbol = {executor.submit(fetch_fundamental_raw, sym, session): sym for sym in symbols_tuple}
         for future in as_completed(future_to_symbol):
             sym = future_to_symbol[future]
-            eps_g, rev_g = future.result()
-            results[sym] = (eps_g, rev_g)
+            try:
+                eps_g, rev_g = future.result(timeout=2.5)
+                results[sym] = (eps_g, rev_g)
+            except Exception:
+                results[sym] = (None, None)
     return results
 
 def process_single_technical(symbol, session, fundamental_dict):
@@ -210,7 +198,7 @@ def process_single_technical(symbol, session, fundamental_dict):
     url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution=D&symbol={symbol}&from={start_time}&to={end_time}"
     
     try:
-        res = session.get(url, headers=headers, timeout=3.5)
+        res = session.get(url, headers=headers, timeout=2.5)
         if res.status_code == 200:
             js = res.json()
             if js.get('s') == 'ok' and len(js.get('c', [])) >= 22:
@@ -231,14 +219,12 @@ def process_single_technical(symbol, session, fundamental_dict):
                 rsi_raw = rsi_series.iloc[-1]
                 rsi_val = round(float(rsi_raw), 1) if not pd.isna(rsi_raw) else 50.0
                 
-                # Trích xuất dữ liệu BCTC đã cache
                 eps_g, rev_g = fundamental_dict.get(symbol, (None, None))
                 
-                # Xác định trạng thái CANSLIM Cơ bản
                 if eps_g is not None and rev_g is not None:
                     is_fundamental = (eps_g >= 15.0) or (rev_g >= 10.0)
                 else:
-                    is_fundamental = None # Đang cập nhật / N/A
+                    is_fundamental = None
                 
                 return {
                     'Mã': symbol,
@@ -264,19 +250,18 @@ def scan_all_data_with_progress():
     status_text = st.empty()
     progress_bar = st.progress(0)
     
-    status_text.markdown("⏳ **Bước 1/2: Đang đồng bộ dữ liệu BCTC từ Cache/API (Tốc độ cao)...**")
-    progress_bar.progress(0.15)
+    status_text.markdown("⏳ **Bước 1/2: Đang đồng bộ dữ liệu BCTC toàn sàn (Siêu tốc)...**")
+    progress_bar.progress(0.20)
     
-    # Nạp/Lấy Cache dữ liệu BCTC cho 398 mã
     fundamental_dict = get_all_fundamentals_cached(tuple(tasks))
     
     results = []
     x = 0
     session = get_session()
     
-    status_text.markdown("⏳ **Bước 2/2: Đang phân tích Kỹ thuật & Dòng tiền Realtime toàn sàn...**")
+    status_text.markdown("⏳ **Bước 2/2: Đang phân tích Kỹ thuật & Dòng tiền Realtime...**")
     
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=12) as executor:
         future_to_symbol = {executor.submit(process_single_technical, symbol, session, fundamental_dict): symbol for symbol in tasks}
         
         for future in as_completed(future_to_symbol):
@@ -285,7 +270,7 @@ def scan_all_data_with_progress():
             l_percent = round((x / y) * 100, 2)
             
             status_text.markdown(f"⏳ **Đang rà soát dữ liệu kỹ thuật mã {symbol} ({x}/{y} mã - {l_percent}%)**")
-            progress_bar.progress(0.15 + 0.85 * (x / y))
+            progress_bar.progress(0.20 + 0.80 * (x / y))
             
             res = future.result()
             if res is not None:
@@ -300,15 +285,13 @@ def scan_all_data_with_progress():
         df['Xếp hạng RS Percentile'] = df['Điểm RS'].rank(pct=True) * 100
         df['Leader RS Top 20%'] = (df['Xếp hạng RS Percentile'] >= 80.0) & (df['Giá'] >= df['Đường MA50'])
         
-        # --- CẢI TIẾN 3: TÍNH ĐIỂM CANSLIM ĐỘNG CÔNG BẰNG KHI BỘ LỌC N/A ---
         def calc_score(row):
             score = row['Điểm RS'] * 0.5
             
             if row['CANSLIM Cơ bản'] is True:
                 score += 25
             elif row['CANSLIM Cơ bản'] is None:
-                # Nếu BCTC bị N/A, hỗ trợ bù 12.5 điểm trung bình để không phạt oan cổ phiếu mạnh
-                score += 12.5
+                score += 12.5 # Hỗ trợ điểm trung bình khi BCTC bị lỗi N/A
                 
             if row['Leader RS Top 20%']:
                 score += 25
@@ -366,7 +349,6 @@ if btn or "df_cached" in st.session_state:
             if row['Leader RS Top 20%']:
                 badges_html += '<span class="badge" style="background-color:#d97706;">Leader Top 20% RS</span>'
 
-            # --- CẢI TIẾN HIỂN THỊ THÔNG TIN BCTC ---
             eps_val = row['Tăng trưởng LNST Quý (%)']
             rev_val = row['Tăng trưởng Doanh thu (%)']
             
@@ -375,7 +357,7 @@ if btn or "df_cached" in st.session_state:
             else:
                 eps_str = f"+{eps_val}%" if eps_val >= 0 else f"{eps_val}%"
                 rev_str = f"+{rev_val}%" if rev_val >= 0 else f"{rev_val}%"
-                bctc_html = f'<span style="color:#00ff99; font-weight:bold;">+{eps_str}</span> | <b>Doanh thu:</b> <span style="color:#00ff99; font-weight:bold;">{rev_str}</span>'
+                bctc_html = f'<span style="color:#00ff99; font-weight:bold;">{eps_str}</span> | <b>Doanh thu:</b> <span style="color:#00ff99; font-weight:bold;">{rev_str}</span>'
 
             st.markdown(f"""
             <div class="card">
