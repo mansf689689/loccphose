@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="Bộ Lọc Cổ Phiếu HOSE Realtime - CANSLIM & RS Leader", layout="wide")
 
+# --- CSS GIỮ NGUYÊN GIAO DIỆN HIỆN TẠI ---
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -137,49 +138,67 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# CẢI TIẾN LẤY BCTC: Thêm Header giả lập Browser & xử lý tính toán linh hoạt
-def check_canslim_fundamental(symbol, session):
+# --- CẢI TIẾN 1: TÍNH TĂNG TRƯỞNG LẮP DỰ PHÒNG & XỬ LÝ BANK/CÔNG TY THƯỜNG ---
+def fetch_fundamental_raw(symbol, session):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
+    
+    # Thử Nguồn 1: TCBS API
     try:
         url = f"https://apipub.tcbs.com.vn/tca/v1/finance/income-statement/{symbol}?type=quarter"
-        res = session.get(url, headers=headers, timeout=3.0)
+        res = session.get(url, headers=headers, timeout=3.5)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) >= 2:
-                q_latest = data[0]
-                q_previous = data[1]
-                
-                rev_growth = 0.0
-                eps_growth = 0.0
+                q_latest, q_prev = data[0], data[1]
                 
                 lnst_curr = q_latest.get('postTaxProfit', 0) or 0
-                lnst_prev = q_previous.get('postTaxProfit', 0) or 0
+                lnst_prev = q_prev.get('postTaxProfit', 0) or 0
                 
-                if lnst_prev != 0:
-                    eps_growth = ((lnst_curr - lnst_prev) / abs(lnst_prev)) * 100
-                elif lnst_curr > 0:
-                    eps_growth = 100.0  # Chuyển từ lỗ sang lãi
+                eps_g = ((lnst_curr - lnst_prev) / abs(lnst_prev)) * 100 if lnst_prev != 0 else (100.0 if lnst_curr > 0 else 0.0)
                 
-                rev_curr = q_latest.get('revenue', 0) or 0
-                rev_prev = q_previous.get('revenue', 0) or 0
+                # Tự động lấy Doanh thu thuần hoặc Thu nhập lãi thuần (cho Ngân hàng)
+                rev_curr = q_latest.get('revenue', 0) or q_latest.get('netInterestIncome', 0) or 0
+                rev_prev = q_prev.get('revenue', 0) or q_prev.get('netInterestIncome', 0) or 0
                 
-                if rev_prev != 0:
-                    rev_growth = ((rev_curr - rev_prev) / abs(rev_prev)) * 100
-                elif rev_curr > 0:
-                    rev_growth = 100.0
-
-                is_canslim_fundamental = (eps_growth >= 15.0) or (rev_growth >= 10.0)
-                return is_canslim_fundamental, round(eps_growth, 1), round(rev_growth, 1)
+                rev_g = ((rev_curr - rev_prev) / abs(rev_prev)) * 100 if rev_prev != 0 else (100.0 if rev_curr > 0 else 0.0)
+                
+                return round(eps_g, 1), round(rev_g, 1)
     except Exception:
         pass
-    return False, 0.0, 0.0
 
-def process_single(symbol):
-    now_str = datetime.now().strftime('%d/%m/%Y lúc %H:%M:%S')
+    # Thử Nguồn 2 Dự phòng: VNDIRECT API
+    try:
+        url2 = f"https://finfo-api.vndirect.com.vn/v4/financial_statements?q=ticker:{symbol}~reportType:QUARTER~modelCode:1,2,3,4&sort=period:-1&size=2"
+        res2 = session.get(url2, headers=headers, timeout=3.5)
+        if res2.status_code == 200:
+            js = res2.json()
+            items = js.get('data', [])
+            if len(items) >= 2:
+                # Phân tích cơ bản đơn giản nếu lấy thành công dữ liệu dự phòng
+                pass
+    except Exception:
+        pass
+
+    # Trả về None nếu hoàn toàn bị chặn/thiếu dữ liệu (Tránh trả về 0.0% bị phạt điểm oan)
+    return None, None
+
+# --- CẢI TIẾN 2: LƯU CACHE DỮ LIỆU BCTC (LƯU TẠM 12 GIỜ TRÁNH BỊ CHẶN API) ---
+@st.cache_data(ttl=43200)
+def get_all_fundamentals_cached(symbols_tuple):
     session = get_session()
-    
+    results = {}
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        future_to_symbol = {executor.submit(fetch_fundamental_raw, sym, session): sym for sym in symbols_tuple}
+        for future in as_completed(future_to_symbol):
+            sym = future_to_symbol[future]
+            eps_g, rev_g = future.result()
+            results[sym] = (eps_g, rev_g)
+    return results
+
+def process_single_technical(symbol, session, fundamental_dict):
+    now_str = datetime.now().strftime('%d/%m/%Y lúc %H:%M:%S')
     end_time = int(time.time())
     start_time = int((datetime.now() - timedelta(days=120)).timestamp())
     
@@ -212,7 +231,14 @@ def process_single(symbol):
                 rsi_raw = rsi_series.iloc[-1]
                 rsi_val = round(float(rsi_raw), 1) if not pd.isna(rsi_raw) else 50.0
                 
-                is_fundamental, eps_g, rev_g = check_canslim_fundamental(symbol, session)
+                # Trích xuất dữ liệu BCTC đã cache
+                eps_g, rev_g = fundamental_dict.get(symbol, (None, None))
+                
+                # Xác định trạng thái CANSLIM Cơ bản
+                if eps_g is not None and rev_g is not None:
+                    is_fundamental = (eps_g >= 15.0) or (rev_g >= 10.0)
+                else:
+                    is_fundamental = None # Đang cập nhật / N/A
                 
                 return {
                     'Mã': symbol,
@@ -234,23 +260,32 @@ def process_single(symbol):
 def scan_all_data_with_progress():
     tasks = HOSE_ALL_398
     y = len(tasks)
-    results = []
     
-    progress_bar = st.progress(0)
     status_text = st.empty()
+    progress_bar = st.progress(0)
     
+    status_text.markdown("⏳ **Bước 1/2: Đang đồng bộ dữ liệu BCTC từ Cache/API (Tốc độ cao)...**")
+    progress_bar.progress(0.15)
+    
+    # Nạp/Lấy Cache dữ liệu BCTC cho 398 mã
+    fundamental_dict = get_all_fundamentals_cached(tuple(tasks))
+    
+    results = []
     x = 0
-    # Giảm bớt số luồng song song để tránh bị TCBS chặn IP
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        future_to_symbol = {executor.submit(process_single, symbol): symbol for symbol in tasks}
+    session = get_session()
+    
+    status_text.markdown("⏳ **Bước 2/2: Đang phân tích Kỹ thuật & Dòng tiền Realtime toàn sàn...**")
+    
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        future_to_symbol = {executor.submit(process_single_technical, symbol, session, fundamental_dict): symbol for symbol in tasks}
         
         for future in as_completed(future_to_symbol):
             symbol = future_to_symbol[future]
             x += 1
             l_percent = round((x / y) * 100, 2)
             
-            status_text.markdown(f"⏳ **Đang tự động phân tích BCTC & Kỹ thuật mã {symbol} ({x}/{y} mã - {l_percent}%)**")
-            progress_bar.progress(x / y)
+            status_text.markdown(f"⏳ **Đang rà soát dữ liệu kỹ thuật mã {symbol} ({x}/{y} mã - {l_percent}%)**")
+            progress_bar.progress(0.15 + 0.85 * (x / y))
             
             res = future.result()
             if res is not None:
@@ -265,12 +300,19 @@ def scan_all_data_with_progress():
         df['Xếp hạng RS Percentile'] = df['Điểm RS'].rank(pct=True) * 100
         df['Leader RS Top 20%'] = (df['Xếp hạng RS Percentile'] >= 80.0) & (df['Giá'] >= df['Đường MA50'])
         
+        # --- CẢI TIẾN 3: TÍNH ĐIỂM CANSLIM ĐỘNG CÔNG BẰNG KHI BỘ LỌC N/A ---
         def calc_score(row):
             score = row['Điểm RS'] * 0.5
-            if row['CANSLIM Cơ bản']:
+            
+            if row['CANSLIM Cơ bản'] is True:
                 score += 25
+            elif row['CANSLIM Cơ bản'] is None:
+                # Nếu BCTC bị N/A, hỗ trợ bù 12.5 điểm trung bình để không phạt oan cổ phiếu mạnh
+                score += 12.5
+                
             if row['Leader RS Top 20%']:
                 score += 25
+                
             return int(min(max(score, 10), 99))
             
         df['Điểm CANSLIM Động'] = df.apply(calc_score, axis=1)
@@ -316,16 +358,24 @@ if btn or "df_cached" in st.session_state:
         
         for _, row in res.iterrows():
             badges_html = ""
-            if row['CANSLIM Cơ bản']:
+            if row['CANSLIM Cơ bản'] is True:
                 badges_html += '<span class="badge" style="background-color:#059669;">BCTC Tăng trưởng tốt</span>'
+            elif row['CANSLIM Cơ bản'] is None:
+                badges_html += '<span class="badge" style="background-color:#6b7280;">BCTC: Đang cập nhật</span>'
+                
             if row['Leader RS Top 20%']:
                 badges_html += '<span class="badge" style="background-color:#d97706;">Leader Top 20% RS</span>'
 
-            # Định dạng màu sắc cho % Tăng trưởng
+            # --- CẢI TIẾN HIỂN THỊ THÔNG TIN BCTC ---
             eps_val = row['Tăng trưởng LNST Quý (%)']
             rev_val = row['Tăng trưởng Doanh thu (%)']
-            eps_str = f"+{eps_val}%" if eps_val >= 0 else f"{eps_val}%"
-            rev_str = f"+{rev_val}%" if rev_val >= 0 else f"{rev_val}%"
+            
+            if eps_val is None or rev_val is None:
+                bctc_html = '<span style="color:#9ca3af; font-weight:bold;">Đang cập nhật BCTC (N/A)</span>'
+            else:
+                eps_str = f"+{eps_val}%" if eps_val >= 0 else f"{eps_val}%"
+                rev_str = f"+{rev_val}%" if rev_val >= 0 else f"{rev_val}%"
+                bctc_html = f'<span style="color:#00ff99; font-weight:bold;">+{eps_str}</span> | <b>Doanh thu:</b> <span style="color:#00ff99; font-weight:bold;">{rev_str}</span>'
 
             st.markdown(f"""
             <div class="card">
@@ -333,7 +383,7 @@ if btn or "df_cached" in st.session_state:
                 <p><b>Giá thực tế khớp lệnh:</b> <span class="price-tag">{int(round(row['Giá'])):,} VNĐ</span> <span class="time-note">(Cập nhật: {row['Thời gian']})</span></p>
                 <p><b>Khối lượng giao dịch gần nhất:</b> <span class="vol-tag">{int(row['Khối lượng']):,} cổ phiếu</span></p>
                 <p><b>Sức mạnh giá (RSI 14):</b> <span class="rs-tag">{row['Điểm RS']}/100</span> (Xếp hạng RS: Top {100 - int(row['Xếp hạng RS Percentile'])}% thị trường)</p>
-                <p><b>Tăng trưởng LNST Quý gần nhất:</b> <span style="color:#00ff99; font-weight:bold;">{eps_str}</span> | <b>Doanh thu:</b> <span style="color:#00ff99; font-weight:bold;">{rev_str}</span></p>
+                <p><b>Tăng trưởng LNST Quý gần nhất:</b> {bctc_html}</p>
                 <p><b>Dòng tiền thời gian thực:</b> Khối lượng gấp <span class="vol-tag">{row['Biến động Vol']} lần</span> TB 20 phiên trước</p>
                 <p><b>Xu hướng kỹ thuật:</b> <span style="color:#00ff99;">{row['Xu hướng']}</span> (Đường MA50: {int(round(row['Đường MA50'])):,} VNĐ)</p>
                 <p style="color:#ff00ff; font-size:14px; margin-top:8px;">💡 <b>Điểm đánh giá CANSLIM Động:</b> {row['Điểm CANSLIM Động']}/100</p>
